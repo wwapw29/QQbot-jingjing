@@ -31,7 +31,7 @@
 QQBot/
 ├── QQBot.slnx                # 解决方案
 ├── scripts/                  # 启停脚本（start / stop / restart）
-├── 外部依赖/                 # QQ 安装程序 + NapCat 安装包
+├── 外部依赖/                 # QQ 安装程序 + NapCat 安装包（百度网盘下载，见快速开始）
 └── src/QQBot/
     ├── Program.cs            # 入口 & DI 注册
     ├── appsettings.json      # 全部配置（JSONC，支持 // 注释）
@@ -41,6 +41,20 @@ QQBot/
 ```
 
 ## 快速开始
+
+### 📦 外部依赖下载（先做这个）
+
+QQ 安装程序与 NapCat 安装包体积较大，**不随仓库分发**，请从百度网盘下载：
+
+> **百度网盘**：https://pan.baidu.com/s/1xUpWmQxjVcd_juwBQfKlmg?pwd=e5jv
+>
+> **提取码**：`e5jv`
+>
+> 包内含：`QQ_9.9.33_x64.exe`（QQ NT 安装程序）、`NapCat.Shell.zip`（协议端完整包）、`NapCat.Shell.Windows.OneKey.zip`（一键安装包）
+>
+> ⚠️ **版本说明**：以上为项目构建时随附的版本，不保证是最新版；如需更新，请自行前往 [QQ 官网](https://im.qq.com/) 与 [NapCat 官方仓库](https://github.com/NapNeko/NapCatQQ) 获取新版本。
+>
+> 下载后解压到项目根目录 `外部依赖/` 下（结构：`外部依赖/QQ_9.9.33_x64.exe`、`外部依赖/NapCat.Shell.zip`、`外部依赖/NapCat.Shell.Windows.OneKey.zip`）。
 
 ### 0. 前置环境
 
