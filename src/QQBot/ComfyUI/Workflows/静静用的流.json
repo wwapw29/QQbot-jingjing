@@ -1,0 +1,542 @@
+{
+  "3": {
+    "inputs": {
+      "seed": [
+        "21",
+        0
+      ],
+      "steps": [
+        "90",
+        2
+      ],
+      "cfg": [
+        "90",
+        3
+      ],
+      "sampler_name": [
+        "90",
+        6
+      ],
+      "scheduler": [
+        "90",
+        7
+      ],
+      "denoise": [
+        "90",
+        4
+      ],
+      "model": [
+        "25",
+        3
+      ],
+      "positive": [
+        "193",
+        0
+      ],
+      "negative": [
+        "199",
+        0
+      ],
+      "latent_image": [
+        "202",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "K采样器"
+    }
+  },
+  "10": {
+    "inputs": {
+      "width": 960,
+      "height": 1440
+    },
+    "class_type": "ResolutionMasterSimplify",
+    "_meta": {
+      "title": "分辨率大师简化版 (Resolution Master Simplify)"
+    }
+  },
+  "21": {
+    "inputs": {
+      "seed": 584420979750494
+    },
+    "class_type": "SeedGeneratorMira",
+    "_meta": {
+      "title": "Random Seed Generator"
+    }
+  },
+  "25": {
+    "inputs": {
+      "positive": "<wlr:新建文件夹\\firedotinc_old-dataset_anima-b1_v6:0.8:1:1>, <wlr:新建文件夹\\gpt-image-2_anima-base1_v1-1:1:1:1>, <wlr:ex\\luozhou_v1_epoch14:0.8:1:1>",
+      "auto_random": true,
+      "lora_str": "[{\"name\":\"新建文件夹\\\\firedotinc_old-dataset_anima-b1_v6\",\"weight\":0.8,\"text_encoder_weight\":1,\"display_name\":\"新建文件夹\\\\firedotinc_old-dataset_anima-b1_v6.safetensors\",\"lora\":\"新建文件夹\\\\firedotinc_old-dataset_anima-b1_v6.safetensors\",\"trigger_weight\":1,\"loraWorks\":\"@firedotinc-old\",\"hidden\":false},{\"name\":\"新建文件夹\\\\gpt-image-2_anima-base1_v1-1\",\"weight\":1,\"text_encoder_weight\":1,\"display_name\":\"新建文件夹\\\\gpt-image-2_anima-base1_v1-1.safetensors\",\"lora\":\"新建文件夹\\\\gpt-image-2_anima-base1_v1-1.safetensors\",\"trigger_weight\":1,\"loraWorks\":\"\",\"hidden\":false},{\"name\":\"ex\\\\luozhou_v1_epoch14\",\"weight\":0.8,\"text_encoder_weight\":1,\"display_name\":\"ex\\\\luozhou_v1_epoch14.safetensors\",\"lora\":\"ex\\\\luozhou_v1_epoch14.safetensors\",\"trigger_weight\":1,\"loraWorks\":\"\"}]",
+      "temp_str": "[{\"id\":\"token_1_1785859672332\",\"text\":\"<wlr:新建文件夹\\\\firedotinc_old-dataset_anima-b1_v6:1:1:1>\",\"translate\":\"新建文件夹\\\\firedotinc_old-dataset_anima-b1_v6\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_1_1785854028732\",\"text\":\"<wlr:新建文件夹\\\\gpt-image-2_anima-base1_v1-1:0.7:1:1>\",\"translate\":\"新建文件夹\\\\gpt-image-2_anima-base1_v1-1\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null,\"isLoraTag\":false},{\"id\":\"token_18_1785850726576\",\"text\":\"dynamic_angle\",\"translate\":\"动态角度\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":true,\"color\":\"rgba(99, 201, 2, .4)\",\"isLoraTag\":false,\"hiddenHint\":\"双击显示提示词\"},{\"id\":\"token_1_1784934460965\",\"text\":\"solo\",\"translate\":\"单人\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":true,\"color\":\"rgba(255, 123, 2, .4)\",\"isLoraTag\":false,\"hiddenHint\":\"双击显示提示词\"},{\"id\":\"token_1_1785430871466\",\"text\":\"uncensored\",\"translate\":\"无码\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":true,\"color\":null,\"isLoraTag\":false,\"hiddenHint\":\"双击显示提示词\"},{\"id\":\"token_1_1785244943435\",\"text\":\"pov\",\"translate\":\"第一人称视角\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":true,\"color\":null,\"isLoraTag\":false,\"hiddenHint\":\"双击显示提示词\"},{\"id\":\"token_3_1783188431086\",\"text\":\"size_difference\",\"translate\":\"大小差异\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":true,\"color\":null,\"isLoraTag\":false,\"hiddenHint\":\"双击显示提示词\"},{\"id\":\"token_4_1783188439531\",\"text\":\"height_difference\",\"translate\":\"身高差\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":true,\"color\":null,\"isLoraTag\":false,\"hiddenHint\":\"双击显示提示词\"},{\"id\":\"token_2_1785258579127\",\"text\":\"school_uniform\",\"translate\":\"校服\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":true,\"color\":\"rgba(230, 84, 128, .4)\",\"isLoraTag\":false,\"hiddenHint\":\"双击显示提示词\"},{\"id\":\"token_2_1785601600692\",\"text\":\"black_pantyhose\",\"translate\":\"黑丝裤袜\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":true,\"color\":\"rgba(230, 84, 128, .4)\",\"isLoraTag\":false,\"hiddenHint\":\"双击显示提示词\"},{\"id\":\"token_1_1785855547114\",\"text\":\"\\n\",\"translate\":\"\",\"isPunctuation\":false,\"isEditing\":false,\"isHidden\":false,\"color\":null}]",
+      "temp_lora_str": "[{\"name\":\"新建文件夹\\\\firedotinc_old-dataset_anima-b1_v6\",\"weight\":0.8,\"text_encoder_weight\":1,\"display_name\":\"新建文件夹\\\\firedotinc_old-dataset_anima-b1_v6.safetensors\",\"lora\":\"新建文件夹\\\\firedotinc_old-dataset_anima-b1_v6.safetensors\",\"trigger_weight\":1,\"loraWorks\":\"@firedotinc-old\",\"hidden\":false},{\"name\":\"新建文件夹\\\\gpt-image-2_anima-base1_v1-1\",\"weight\":1,\"text_encoder_weight\":1,\"display_name\":\"新建文件夹\\\\gpt-image-2_anima-base1_v1-1.safetensors\",\"lora\":\"新建文件夹\\\\gpt-image-2_anima-base1_v1-1.safetensors\",\"trigger_weight\":1,\"loraWorks\":\"\",\"hidden\":false},{\"name\":\"ex\\\\kazueru style for Anima\",\"weight\":0.8,\"text_encoder_weight\":1,\"display_name\":\"ex\\\\kazueru style for Anima.safetensors\",\"lora\":\"ex\\\\kazueru style for Anima.safetensors\",\"trigger_weight\":1,\"loraWorks\":\"1girl\",\"hidden\":true},{\"name\":\"ex\\\\luozhou_v1_epoch14\",\"weight\":0.8,\"text_encoder_weight\":1,\"display_name\":\"ex\\\\luozhou_v1_epoch14.safetensors\",\"lora\":\"ex\\\\luozhou_v1_epoch14.safetensors\",\"trigger_weight\":1,\"loraWorks\":\"\"}]",
+      "random_template": "",
+      "打开提示词编辑器": "",
+      "打开Lora堆": "",
+      "opt_clip": [
+        "291",
+        0
+      ],
+      "opt_model": [
+        "289",
+        0
+      ]
+    },
+    "class_type": "WeiLinPromptUI",
+    "_meta": {
+      "title": "正面提示词（中段）"
+    }
+  },
+  "34": {
+    "inputs": {
+      "samples": [
+        "3",
+        0
+      ],
+      "vae": [
+        "290",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE解码"
+    }
+  },
+  "51": {
+    "inputs": {
+      "width": [
+        "10",
+        0
+      ],
+      "height": [
+        "10",
+        1
+      ],
+      "batch_size": [
+        "90",
+        8
+      ]
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "空Latent图像"
+    }
+  },
+  "81": {
+    "inputs": {
+      "selected_prompts": "",
+      "prompt_selector": "",
+      "prefix_prompt": [
+        "314",
+        0
+      ]
+    },
+    "class_type": "PromptSelector",
+    "_meta": {
+      "title": "前置提示词选择器"
+    }
+  },
+  "82": {
+    "inputs": {
+      "selected_prompts": "",
+      "prompt_selector": ""
+    },
+    "class_type": "PromptSelector",
+    "_meta": {
+      "title": "后置提示词选择器"
+    }
+  },
+  "86": {
+    "inputs": {
+      "清理逗号 (cleanup_commas)": true,
+      "清理空白 (cleanup_whitespace)": true,
+      "移除LoRA标签 (remove_lora_tags)": false,
+      "清理换行 (cleanup_newlines)": "否 (false)",
+      "修复括号 (fix_brackets)": "两者 (both)",
+      "提示词格式化 (prompt_formatting)": true,
+      "下划线转空格 (underscore_to_space)": true,
+      "权重语法补全 (complete_weight_syntax)": true,
+      "智能括号转义 (smart_bracket_escaping)": true,
+      "标准化逗号 (standardize_commas)": true,
+      "修复分区语法 (fix_region_syntax)": true,
+      "string": [
+        "236",
+        0
+      ]
+    },
+    "class_type": "PromptCleaningMaid",
+    "_meta": {
+      "title": "提示词清洁女仆 (Prompt Cleaning Maid)"
+    }
+  },
+  "89": {
+    "inputs": {
+      "pcp_ui": ""
+    },
+    "class_type": "ParameterControlPanel",
+    "_meta": {
+      "title": "生图参数控制"
+    }
+  },
+  "90": {
+    "inputs": {
+      "parameters": [
+        "89",
+        0
+      ]
+    },
+    "class_type": "ParameterBreak",
+    "_meta": {
+      "title": "参数展开 (Parameter Break)"
+    }
+  },
+  "167": {
+    "inputs": {
+      "value1": [
+        "34",
+        0
+      ]
+    },
+    "class_type": "ImpactMakeAnyList",
+    "_meta": {
+      "title": "最终出图列表"
+    }
+  },
+  "188": {
+    "inputs": {
+      "value1": [
+        "317",
+        0
+      ]
+    },
+    "class_type": "ImpactMakeAnyList",
+    "_meta": {
+      "title": "Make List (Any)"
+    }
+  },
+  "190": {
+    "inputs": {
+      "value1": [
+        "297",
+        0
+      ]
+    },
+    "class_type": "ImpactMakeAnyList",
+    "_meta": {
+      "title": "Make List (Any)"
+    }
+  },
+  "191": {
+    "inputs": {
+      "any": [
+        "188",
+        0
+      ]
+    },
+    "class_type": "easy lengthAnything",
+    "_meta": {
+      "title": "任何长度"
+    }
+  },
+  "193": {
+    "inputs": {
+      "index": [
+        "194",
+        0
+      ],
+      "any": [
+        "188",
+        0
+      ]
+    },
+    "class_type": "easy indexAnything",
+    "_meta": {
+      "title": "任何索引"
+    }
+  },
+  "194": {
+    "inputs": {
+      "a": [
+        "191",
+        0
+      ],
+      "b": -1,
+      "operation": "add"
+    },
+    "class_type": "easy mathInt",
+    "_meta": {
+      "title": "整数运算"
+    }
+  },
+  "199": {
+    "inputs": {
+      "index": [
+        "194",
+        0
+      ],
+      "any": [
+        "190",
+        0
+      ]
+    },
+    "class_type": "easy indexAnything",
+    "_meta": {
+      "title": "任何索引"
+    }
+  },
+  "201": {
+    "inputs": {
+      "value1": [
+        "51",
+        0
+      ]
+    },
+    "class_type": "ImpactMakeAnyList",
+    "_meta": {
+      "title": "Make List (Any)"
+    }
+  },
+  "202": {
+    "inputs": {
+      "index": [
+        "205",
+        0
+      ],
+      "any": [
+        "201",
+        0
+      ]
+    },
+    "class_type": "easy indexAnything",
+    "_meta": {
+      "title": "任何索引"
+    }
+  },
+  "204": {
+    "inputs": {
+      "any": [
+        "201",
+        0
+      ]
+    },
+    "class_type": "easy lengthAnything",
+    "_meta": {
+      "title": "任何长度"
+    }
+  },
+  "205": {
+    "inputs": {
+      "a": [
+        "204",
+        0
+      ],
+      "b": -1,
+      "operation": "add"
+    },
+    "class_type": "easy mathInt",
+    "_meta": {
+      "title": "整数运算"
+    }
+  },
+  "207": {
+    "inputs": {
+      "enable": true,
+      "filename_prefix": "ComfyUI",
+      "file_format": "JPEG",
+      "quality": 100,
+      "embed_workflow": true,
+      "save_clean_copy": false,
+      "enable_preview": true,
+      "images": [
+        "211",
+        0
+      ]
+    },
+    "class_type": "SaveImagePlus",
+    "_meta": {
+      "title": "保存图像增强版 (Save Image Plus)"
+    }
+  },
+  "210": {
+    "inputs": {
+      "mode": "Always Pause",
+      "preview_rescale": 1,
+      "等待选择中...": ""
+    },
+    "class_type": "easy imageChooser",
+    "_meta": {
+      "title": "图像选择器"
+    }
+  },
+  "211": {
+    "inputs": {
+      "anything": [
+        "318",
+        0
+      ]
+    },
+    "class_type": "easy cleanGpuUsed",
+    "_meta": {
+      "title": "清理显存占用"
+    }
+  },
+  "235": {
+    "inputs": {
+      "value1": [
+        "81",
+        0
+      ],
+      "value2": [
+        "319",
+        0
+      ],
+      "value3": [
+        "25",
+        0
+      ],
+      "value4": [
+        "82",
+        0
+      ]
+    },
+    "class_type": "ImpactMakeAnyList",
+    "_meta": {
+      "title": "Make List (Any)"
+    }
+  },
+  "236": {
+    "inputs": {
+      "join_with": "\\n",
+      "string_list": [
+        "235",
+        0
+      ]
+    },
+    "class_type": "StringListToString",
+    "_meta": {
+      "title": "String List to String"
+    }
+  },
+  "256": {
+    "inputs": {
+      "text": "masterpiece, detailed-play-of-shadows, lateral incidence of light best quality, ultra-detailed, muted colors, loli, kinomoto sakura from cardcaptor sakura\n@firedotinc-old:1.0, 新建文件夹\\gpt-image-2 anima-base1 v1:1.0, lace panties under pantyhose, crotch focus, close up, upskirt, cameltoe\nfeet, on back, knees together feet apart, hugging own legs, light blush, disdain, female orgasm, pussy, pussy juice, sex, deep penetration, faceless male, penis, cum in pussy, uncensored",
+      "anything": [
+        "86",
+        0
+      ]
+    },
+    "class_type": "easy showAnything",
+    "_meta": {
+      "title": "最终提示词(正向)"
+    }
+  },
+  "289": {
+    "inputs": {
+      "unet_name": [
+        "90",
+        0
+      ],
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "UNet加载器"
+    }
+  },
+  "290": {
+    "inputs": {
+      "vae_name": [
+        "90",
+        1
+      ]
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "加载VAE"
+    }
+  },
+  "291": {
+    "inputs": {
+      "clip_name": "rinFlanimeAnima_v10_txt.safetensors",
+      "type": "stable_diffusion",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "加载CLIP"
+    }
+  },
+  "297": {
+    "inputs": {
+      "text": "worst quality, low quality, score_1, score_2, score_3, blurry, jpeg artifacts, censored, watermark, color degradation, censor bar, ",
+      "clip": [
+        "291",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP文本编码"
+    }
+  },
+  "304": {
+    "inputs": {
+      "gmm_ui": ""
+    },
+    "class_type": "GroupMuteManager",
+    "_meta": {
+      "title": "组静音管理器 (Group Mute Manager)"
+    }
+  },
+  "314": {
+    "inputs": {
+      "selected_prompts": "masterpiece, detailed-play-of-shadows, lateral incidence of light best quality, ultra-detailed,muted colors,",
+      "prompt_selector": ""
+    },
+    "class_type": "PromptSelector",
+    "_meta": {
+      "title": "前置的前置提示词（笑）"
+    }
+  },
+  "317": {
+    "inputs": {
+      "text": [
+        "256",
+        0
+      ],
+      "clip": [
+        "25",
+        2
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIP文本编码"
+    }
+  },
+  "318": {
+    "inputs": {
+      "anything": [
+        "167",
+        0
+      ]
+    },
+    "class_type": "easy cleanGpuUsed",
+    "_meta": {
+      "title": "清理显存占用"
+    }
+  },
+  "319": {
+    "inputs": {
+      "value": ""
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "静静的提示词"
+    }
+  }
+}

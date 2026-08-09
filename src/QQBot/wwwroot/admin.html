@@ -1,0 +1,1555 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>静静 · 管理面板</title>
+<style>
+:root{
+  --bg:#15171c; --bg2:#1d2026; --bg3:#252932; --line:#323744;
+  --tx:#e6e8ee; --tx2:#9aa1b0; --tx3:#6b7280;
+  --ac:#e07bb8; --ac2:#7f77dd; --ok:#5dcaa5; --warn:#ef9f27; --bad:#e24b4a;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--tx);font-family:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;font-size:14px;min-height:100vh}
+header{display:flex;align-items:center;gap:18px;padding:14px 24px;background:var(--bg2);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10}
+.logo{font-size:16px;font-weight:600;color:var(--ac);letter-spacing:1px}
+.logo small{color:var(--tx3);font-weight:400;margin-left:8px;font-size:12px}
+nav{display:flex;gap:4px;flex-wrap:wrap}
+nav a{color:var(--tx2);text-decoration:none;padding:7px 14px;border-radius:8px;font-size:13px;cursor:pointer;transition:.15s}
+nav a:hover{background:var(--bg3);color:var(--tx)}
+nav a.active{background:var(--ac);color:#fff}
+main{padding:24px;max-width:1100px;margin:0 auto}
+.page{display:none}
+.page.active{display:block}
+h2{font-size:15px;font-weight:600;margin-bottom:16px;color:var(--tx)}
+h2 small{color:var(--tx3);font-weight:400;font-size:12px;margin-left:10px}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:22px}
+.card{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.card .num{font-size:26px;font-weight:600;color:var(--ac);margin-top:4px}
+.card .label{color:var(--tx2);font-size:12px}
+.panel{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:18px}
+.panel h3{font-size:13px;font-weight:600;color:var(--tx2);margin-bottom:12px}
+.bars{display:flex;align-items:flex-end;gap:10px;height:160px;padding-top:8px}
+.bar-col{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;height:100%;justify-content:flex-end}
+.bar{width:100%;max-width:46px;background:linear-gradient(180deg,var(--ac2),var(--ac));border-radius:6px 6px 2px 2px;min-height:2px;transition:height .4s}
+.bar-col .d{color:var(--tx3);font-size:11px}
+.bar-col .c{color:var(--tx2);font-size:11px}
+.dist{display:flex;gap:10px;flex-wrap:wrap}
+.dist .chip{background:var(--bg3);border:1px solid var(--line);border-radius:8px;padding:8px 14px;font-size:13px}
+.dist .chip b{color:var(--ok);margin-left:8px}
+.meta{display:flex;gap:16px;flex-wrap:wrap;color:var(--tx2);font-size:13px}
+.meta b{color:var(--tx)}
+.placeholder{color:var(--tx3);text-align:center;padding:60px 0;font-size:14px}
+/* 记忆图谱页:全屏渲染框(负 margin 抵消 main 的 padding;高度由 fitGraphPage 动态测量 header 后精确设置) */
+#page-graph.active{display:flex;flex-direction:column;margin:-24px;padding:24px}
+#page-graph.active h2{flex-shrink:0}
+#page-graph.active .mem-toolbar{flex-shrink:0}
+#page-graph.active #graph-box{flex:1;min-height:0!important}
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--bg3);border:1px solid var(--line);padding:10px 20px;border-radius:10px;font-size:13px;opacity:0;transition:.25s;z-index:99}
+.toast.show{opacity:1}
+.toast.err{border-color:var(--bad);color:var(--bad)}
+.mem-toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mem-toolbar select,.mem-toolbar input{background:var(--bg3);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:6px 10px;font-size:13px}
+.mem-toolbar select:focus,.mem-toolbar input:focus{outline:none;border-color:var(--ac)}
+.btn-mini{background:var(--bg3);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:6px 12px;cursor:pointer;font-size:13px;transition:.15s}
+.btn-mini:hover{border-color:var(--ac);color:var(--ac)}
+.btn-mini.primary{border-color:var(--ac);color:var(--ac)}
+.btn-mini.danger{border-color:var(--bad);color:var(--bad)}
+.btn-mini.danger:hover{background:var(--bad);color:#fff}
+.mem-card{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:12px 16px;display:flex;flex-direction:column;gap:8px}
+.mem-card .mem-head{display:flex;align-items:center;gap:8px}
+.mem-card .mem-content{font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;color:var(--tx)}
+.mem-card .mem-meta{font-size:12px;color:var(--tx3);display:flex;gap:12px;flex-wrap:wrap}
+.mem-card .mem-ops{margin-left:auto;display:flex;gap:6px}
+.scope-tag{font-size:11px;padding:2px 8px;border-radius:10px;border:1px solid}
+.scope-tag.global{color:#b48cff;border-color:#b48cff55}
+.scope-tag.user{color:#5fb8ff;border-color:#5fb8ff55}
+.scope-tag.group{color:#6fe08a;border-color:#6fe08a55}
+.stars{color:#ffb84d;letter-spacing:1px;font-size:13px}
+.stars .off{color:var(--tx3);opacity:.4}
+.mem-check{accent-color:var(--ac);width:15px;height:15px;cursor:pointer;flex-shrink:0}
+.mem-expand{color:var(--ac);cursor:pointer;font-size:12px;background:none;border:none;padding:0}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:50}
+.modal.open{display:flex}
+.modal-box{background:var(--bg2);border:1px solid var(--line);border-radius:14px;padding:20px;width:min(560px,92vw);max-height:86vh;overflow-y:auto;display:flex;flex-direction:column;gap:12px}
+.modal-box h3{margin:0;font-size:16px}
+.modal-box label{font-size:12px;color:var(--tx3);display:flex;flex-direction:column;gap:4px}
+.modal-box input,.modal-box select,.modal-box textarea{background:var(--bg3);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px 10px;font-size:13px;font-family:inherit}
+.modal-box input:focus,.modal-box select:focus,.modal-box textarea:focus{outline:none;border-color:var(--ac)}
+.modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:6px}
+button{background:var(--bg3);border:1px solid var(--line);color:var(--tx);padding:7px 16px;border-radius:8px;cursor:pointer;font-size:13px;transition:.15s}
+button:hover{border-color:var(--ac);color:var(--ac)}
+.switch-card{background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;justify-content:space-between;align-items:center;gap:12px}
+.switch-card .lbl{font-size:14px;font-weight:500}
+.switch-card .desc{color:var(--tx3);font-size:12px;margin-top:3px}
+.toggle{width:44px;height:24px;border-radius:12px;background:var(--bg3);border:1px solid var(--line);position:relative;cursor:pointer;transition:.2s;flex-shrink:0}
+.toggle.on{background:var(--ac);border-color:var(--ac)}
+.toggle::after{content:'';position:absolute;top:2px;left:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.2s}
+.toggle.on::after{left:22px}
+.group{background:var(--bg2);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.group-head{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer;user-select:none}
+.group-head:hover{background:var(--bg3)}
+.group-head .arrow{width:10px;height:10px;border-right:2px solid var(--tx2);border-bottom:2px solid var(--tx2);transform:rotate(-45deg);transition:.2s;flex-shrink:0}
+.group-head.open .arrow{transform:rotate(45deg)}
+.group-head .gt{flex:1}
+.group-head .gt .lbl{font-size:14px;font-weight:500}
+.group-head .gt .desc{color:var(--tx3);font-size:12px;margin-top:2px}
+.group-body{display:none;border-top:1px solid var(--line)}
+.group-body.open{display:block}
+.cfg-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:11px 16px 11px 38px;border-bottom:1px solid var(--line)}
+.cfg-row:last-child{border-bottom:none}
+.cfg-row .ct{flex:1}
+.cfg-row .ct .lbl{font-size:13px}
+.cfg-row .ct .desc{color:var(--tx3);font-size:12px;margin-top:2px}
+.cfg-row input[type=number],.cfg-row input[type=text]{background:var(--bg3);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:6px 10px;font-size:13px;width:180px;text-align:right}
+.cfg-row textarea{background:var(--bg3);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px 10px;font-size:12px;width:100%;min-height:44px;resize:none;overflow:hidden;overflow-wrap:break-word;word-break:break-word;white-space:pre-wrap;line-height:1.5;font-family:inherit;box-sizing:border-box;display:block}
+.cfg-row textarea:focus{outline:none;border-color:var(--ac)}
+.cfg-row.ta-row{flex-direction:column;align-items:stretch;gap:4px}
+.cfg-row.ta-row .right{width:100%}
+.cfg-row .saved{color:var(--ok);font-size:12px;opacity:0;transition:.3s;margin-left:8px;flex-shrink:0}
+.cfg-row .saved.show{opacity:1}
+.cfg-row .pending-tag{color:var(--warn);font-size:12px;margin-left:8px;flex-shrink:0;display:none}
+.cfg-row.dirty .pending-tag{display:inline}
+.cfg-row .restart-mark{color:var(--bad);font-weight:700;margin-left:4px}
+.btn-mini{background:var(--bg3);border:1px solid var(--line);color:var(--tx2);border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;margin-left:8px;flex-shrink:0}
+.btn-mini:hover{border-color:var(--ac);color:var(--ac)}
+.cfg-row .model-wrap{display:flex;align-items:center;gap:6px}
+.cfg-row input.model-input{width:220px}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">静静<small>管理面板</small></div>
+  <nav>
+    <a data-page="stats" class="active">统计</a>
+    <a data-page="switches">开关</a>
+    <a data-page="prompts">提示词</a>
+    <a data-page="memories">记忆库</a>
+    <a data-page="graph">记忆图谱</a>
+    <a data-page="tools">Tools</a>
+    <a data-page="console">控制台</a>
+    <a data-page="logs">日志</a>
+  </nav>
+</header>
+<main>
+
+  <section id="page-stats" class="page active">
+    <h2>数据统计<small>静静运行概况</small></h2>
+    <div class="cards">
+      <div class="card"><div class="label">累计消息</div><div class="num" id="st-msgs">–</div></div>
+      <div class="card"><div class="label">会话数</div><div class="num" id="st-sess">–</div></div>
+      <div class="card"><div class="label">长期记忆</div><div class="num" id="st-mems">–</div></div>
+      <div class="card"><div class="label">见过的人数</div><div class="num" id="st-users">–</div></div>
+    </div>
+    <div class="panel">
+      <h3>近 7 天消息量</h3>
+      <div class="bars" id="trend"></div>
+    </div>
+    <div class="panel">
+      <h3>记忆分布</h3>
+      <div class="dist" id="mem-dist"></div>
+    </div>
+    <div class="panel">
+      <h3>机器人信息</h3>
+      <div class="meta" id="bot-meta"></div>
+    </div>
+  </section>
+
+  <section id="page-switches" class="page">
+    <h2>功能开关
+      <small>有主开关的组：关闭时收起子配置，开启自动展开；<span style="color:var(--bad)">*</span> 为需重启项</small>
+      <span style="float:right;display:inline-flex;gap:8px;margin-top:-4px">
+        <button id="save-all" style="background:var(--ac);color:#fff;border:none">保存全部</button>
+        <button id="revert-all">全部撤回</button>
+      </span>
+    </h2>
+    <div id="switches" style="display:flex;flex-direction:column;gap:12px"></div>
+  </section>
+  <section id="page-prompts" class="page">
+    <h2>基础提示词
+      <small>身份/场景人设与提取配置；功能相关的提示词在「开关」对应组里，工具提示词在「Tools」</small>
+      <span style="float:right;display:inline-flex;gap:8px;margin-top:-4px">
+        <button id="prompt-save" style="background:var(--ac);color:#fff;border:none">保存全部</button>
+        <button id="prompt-revert">全部撤回</button>
+      </span>
+    </h2>
+    <div id="prompts" style="display:flex;flex-direction:column;gap:12px"></div>
+  </section>
+  <section id="page-memories" class="page">
+    <h2>记忆库<small>增删改查 · 点击「＋新增」或列表项编辑</small></h2>
+    <div class="mem-toolbar">
+      <select id="mem-scope"><option value="">全部归属</option><option value="global">global</option><option value="user">user</option><option value="group">group</option></select>
+      <select id="mem-owner" style="max-width:220px"><option value="">全部用户/群</option></select>
+      <input id="mem-q" type="text" placeholder="搜索内容/触发词/分类…" style="width:200px">
+      <button class="btn-mini" onclick="loadMemories(0)">搜索</button>
+      <button class="btn-mini primary" onclick="openMemEditor(null)">＋ 新增记忆</button>
+      <button class="btn-mini" id="mem-del-selected" onclick="deleteSelectedMemories()" style="display:none">删除所选</button>
+      <span id="mem-count" style="margin-left:auto;color:var(--tx3);font-size:12px"></span>
+    </div>
+    <div id="mem-list" style="display:flex;flex-direction:column;gap:10px;margin-top:12px"></div>
+    <div id="mem-pager" style="display:flex;gap:6px;margin-top:12px;flex-wrap:wrap"></div>
+  </section>
+  <section id="page-graph" class="page">
+    <h2>记忆图谱<small>归属分层树：scope → 用户/群 → 触发词 → 记忆</small></h2>
+    <div class="mem-toolbar">
+      <select id="grp-scope">
+        <option value="">全部归属</option>
+        <option value="global">global</option>
+        <option value="user">user</option>
+        <option value="group">group</option>
+      </select>
+      <button class="btn-mini" onclick="loadGraph()">刷新</button>
+      <button class="btn-mini primary" id="graph-mode-btn" onclick="toggleGraphMode()">🌐 3D 球状</button>
+      <span id="grp-info" style="margin-left:auto;color:var(--tx3);font-size:12px"></span>
+    </div>
+    <div id="graph-box" style="position:relative;flex:1;min-height:480px;margin-top:10px;border:1px solid var(--line);border-radius:12px;background:var(--bg2);overflow:hidden">
+      <div id="graph-svg-wrap" style="position:absolute;inset:0"></div>
+      <div id="graph-hint" style="position:absolute;top:10px;right:12px;font-size:12px;color:var(--tx3);background:rgba(16,20,28,.7);padding:6px 12px;border-radius:8px;border:1px solid var(--line)">💡 悬停记忆节点→详情</div>
+      <button id="graph-home-btn" class="btn-mini" onclick="graphHome()" title="回到初始视角" style="position:absolute;left:12px;bottom:12px;z-index:6;background:rgba(16,20,28,.72);border:1px solid var(--line);color:var(--tx2);box-shadow:0 2px 8px rgba(0,0,0,.25)">⌂ 返回原点</button>
+      <div id="graph-detail" style="position:absolute;right:12px;bottom:12px;width:320px;max-height:60%;background:rgba(23,29,41,.97);border:1px solid var(--line);border-radius:12px;padding:12px 14px;display:none;z-index:5;overflow-y:auto;font-size:12px">
+        <div id="graph-detail-body"></div>
+      </div>
+    </div>
+  </section>
+  <section id="page-tools" class="page">
+    <h2>Tools 工具
+      <small>启停控制 + 描述覆盖（覆盖描述发给 LLM；描述留空=用代码默认；保存后热更新即时生效）</small>
+      <span style="float:right;display:inline-flex;gap:8px;margin-top:-4px">
+        <button id="tools-save" style="background:var(--ac);color:#fff;border:none">保存全部</button>
+        <button id="tools-revert">全部撤回</button>
+      </span>
+    </h2>
+    <div id="tools" style="display:flex;flex-direction:column;gap:10px"></div>
+  </section>
+  <section id="page-console" class="page">
+    <h2>!命令控制台
+      <small>以主人身份执行 ! 命令，回复显示在此（不发送 QQ；命令内部自发消息如 !draw 发图仍会执行）</small>
+    </h2>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <input id="console-input" type="text" placeholder="输入 ! 命令…（↑↓ 浏览历史，Enter 执行）" style="flex:1;background:var(--bg3);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:8px 12px;font-size:13px;font-family:Consolas,monospace" autocomplete="off" spellcheck="false">
+      <button id="console-run" class="btn-mini primary" style="border-color:var(--ac);color:var(--ac)">执行</button>
+      <button id="console-clear" class="btn-mini">清空</button>
+    </div>
+    <div id="console-hints" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
+    <div id="console-out" style="background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:14px;font-family:Consolas,monospace;font-size:12.5px;line-height:1.75;white-space:pre-wrap;word-break:break-word;min-height:280px;max-height:62vh;overflow-y:auto"></div>
+  </section>
+  <section id="page-logs" class="page">
+    <h2>Debug 日志
+      <small>按天落盘 data/logs/yyyy-MM-dd.log，保留 7 天；最新在上，支持级别/关键词过滤</small>
+    </h2>
+    <div class="mem-toolbar">
+      <select id="log-date" style="min-width:110px"></select>
+      <select id="log-level">
+        <option value="">全部级别</option>
+        <option value="DBG">Debug</option>
+        <option value="INF">Info</option>
+        <option value="WRN">Warn</option>
+        <option value="ERR">Error</option>
+      </select>
+      <input id="log-q" type="text" placeholder="关键词过滤…" style="width:160px">
+      <button class="btn-mini" onclick="loadLogs(0, true)">查询</button>
+      <label style="font-size:12px;color:var(--tx3);display:inline-flex;align-items:center;gap:4px">
+        <input type="checkbox" id="log-auto" style="accent-color:var(--ac)">自动刷新(5s)
+      </label>
+      <span id="log-info" style="margin-left:auto;color:var(--tx3);font-size:12px"></span>
+    </div>
+    <div id="log-out" style="background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:12px 14px;font-family:Consolas,monospace;font-size:12px;line-height:1.75;white-space:pre-wrap;word-break:break-word;min-height:320px;max-height:62vh;overflow-y:auto;margin-top:12px"></div>
+    <div id="log-more" style="text-align:center;padding:10px;display:none">
+      <button class="btn-mini" id="log-more-btn">加载更多</button>
+    </div>
+  </section>
+
+</main>
+<div class="toast" id="toast"></div>
+
+<!-- 记忆编辑弹窗 -->
+<div class="modal" id="mem-modal">
+  <div class="modal-box">
+    <h3 id="mem-modal-title">新增记忆</h3>
+    <label>内容（*）
+      <textarea id="me-content" rows="4" placeholder="记忆内容"></textarea>
+    </label>
+    <label>触发词（逗号分隔，命中则唤起）
+      <input id="me-trigger" type="text" placeholder="如：喜欢,爱吃,讨厌">
+    </label>
+    <div style="display:flex;gap:12px">
+      <label style="flex:1">重要度（1~5 星）
+        <select id="me-importance">
+          <option value="1">★</option><option value="2">★★</option><option value="3">★★★</option>
+          <option value="4">★★★★</option><option value="5">★★★★★</option>
+        </select>
+      </label>
+      <label style="flex:1">分类
+        <input id="me-category" type="text" placeholder="偏好/事件/承诺/规则…">
+      </label>
+    </div>
+    <div style="display:flex;gap:12px">
+      <label style="flex:1">归属
+        <select id="me-scope">
+          <option value="global">global（通用）</option>
+          <option value="user">user（指定用户）</option>
+          <option value="group">group（指定群）</option>
+        </select>
+      </label>
+      <label id="me-owner-wrap" style="flex:1">归属 ID（QQ 号 / 群号）
+        <input id="me-owner" type="number" placeholder="归属 QQ 或群号">
+      </label>
+      <label id="me-member-wrap" style="flex:1;display:none">群内成员 QQ（可选）
+        <input id="me-member" type="number" placeholder="不填=群层面记忆；填了仅该群该人命中">
+      </label>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-mini" onclick="closeMemEditor()">取消</button>
+      <button class="btn-mini primary" onclick="saveMemEditor()">保存</button>
+    </div>
+  </div>
+</div>
+
+<script src="d3.min.js"></script>
+<script src="three.min.js"></script>
+<script>
+const TOKEN_KEY = 'jingjing_admin_token';
+let token = localStorage.getItem(TOKEN_KEY) || '';
+
+function toast(msg, err){
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = 'toast show' + (err ? ' err' : '');
+  setTimeout(() => t.className = 'toast', 2600);
+}
+
+async function api(path, opts = {}){
+  opts.headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+  if (token) opts.headers['Authorization'] = 'Bearer ' + token;
+  let resp = await fetch(path, opts);
+  if (resp.status === 401){
+    token = prompt('请输入管理面板访问令牌：') || '';
+    localStorage.setItem(TOKEN_KEY, token);
+    opts.headers['Authorization'] = 'Bearer ' + token;
+    resp = await fetch(path, opts);
+  }
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  return resp.json();
+}
+
+function fmtNum(n){ return (n ?? 0).toLocaleString(); }
+
+function renderTrend(trend){
+  const el = document.getElementById('trend');
+  const max = Math.max(1, ...trend.map(t => t.count));
+  el.innerHTML = trend.map(t =>
+    `<div class="bar-col"><div class="bar" style="height:${Math.round(t.count / max * 100)}%"></div><div class="c">${t.count}</div><div class="d">${t.day}</div></div>`
+  ).join('');
+}
+
+function renderDist(dist){
+  const el = document.getElementById('mem-dist');
+  if (!dist || !dist.length){ el.innerHTML = '<div class="placeholder" style="padding:20px 0">暂无记忆</div>'; return; }
+  el.innerHTML = dist.map(d => `<div class="chip">${d.scope}<b>${d.count}</b></div>`).join('');
+}
+
+function renderMeta(bot){
+  const el = document.getElementById('bot-meta');
+  const up = bot.uptime ? Math.floor(bot.uptime / 60) : 0;
+  el.innerHTML =
+    `<span>QQ <b>${bot.qq || '–'}</b></span>` +
+    `<span>主人 <b>${bot.owner || '–'}</b></span>` +
+    `<span>主模型 <b>${bot.model || '–'}</b></span>` +
+    `<span>识图 <b>${bot.visionEnabled ? '开' : '关'}</b></span>` +
+    `<span>规划轮 <b>${bot.planningEnabled ? '开' : '关'}</b></span>` +
+    `<span>自主活动 <b>${bot.autoActivity ? '开' : '关'}</b></span>` +
+    `<span>运行 <b>${up} 分钟</b></span>`;
+}
+
+async function loadStats(){
+  try{
+    const d = await api('/api/stats');
+    document.getElementById('st-msgs').textContent = fmtNum(d.messages);
+    document.getElementById('st-sess').textContent = fmtNum(d.sessions);
+    document.getElementById('st-mems').textContent = fmtNum(d.memories);
+    document.getElementById('st-users').textContent = fmtNum(d.users);
+    renderTrend(d.trend || []);
+    renderDist(d.memoryByScope || []);
+    renderMeta(d.bot || {});
+  }catch(e){ toast('加载统计失败：' + e.message, true); }
+}
+
+// ---- 开关页：暂存改动 + 顶部保存/撤回 ----
+let pending = new Map();          // path -> value
+let groupsCache = [];
+
+function markDirty(row, path, value){
+  pending.set(path, value);
+  row.classList.add('dirty');
+}
+
+function flash(el){ el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 1500); }
+
+// textarea 自增长：高度随内容撑开，最大 TA_MAX_LINES 行，超出后出现滚动条（不再变高）。
+// 内容超宽自动换行由 white-space/word-break 保证。
+const TA_MAX_LINES = 12;
+function autoGrow(ta){
+  const st = ta.scrollTop;                 // 保留滚动位置（输入时若已滚到中部不跳顶）
+  ta.style.height = 'auto';
+  const cs = getComputedStyle(ta);
+  const lineH = parseFloat(cs.lineHeight) || 18;
+  const pad = (ta.offsetHeight - ta.clientHeight) || 0;   // 垂直 padding+border
+  const maxH = TA_MAX_LINES * lineH + pad;
+  ta.style.height = Math.min(ta.scrollHeight, maxH) + 'px';
+  ta.style.overflowY = ta.scrollHeight > maxH ? 'auto' : 'hidden';
+  if (ta.scrollHeight > maxH) ta.scrollTop = st;
+}
+
+// ---------------- 记忆库（增删改查） ----------------
+let memPage = 0, memTotal = 0, memSelected = new Set();
+const MEM_SIZE = 20, MEM_MAX_SHOW = 150;
+
+function scopeColor(s){ return s === 'global' ? 'global' : s === 'user' ? 'user' : 'group'; }
+function stars(n){
+  let s = '';
+  for (let i = 1; i <= 5; i++) s += i <= n ? '★' : '<span class="off">★</span>';
+  return `<span class="stars">${s}</span>`;
+}
+
+async function loadMemories(page){
+  memPage = page || 0;
+  const scope = document.getElementById('mem-scope').value;
+  const owner = document.getElementById('mem-owner').value;   // '' | u:{qq} | g:{group}
+  let qq = '', grp = '';
+  if (owner.startsWith('u:')) qq = owner.slice(2);
+  else if (owner.startsWith('g:')) grp = owner.slice(2);
+  const q = document.getElementById('mem-q').value.trim();
+  const el = document.getElementById('mem-list');
+  try{
+    const p = new URLSearchParams({ page: memPage, size: MEM_SIZE });
+    if (scope) p.set('scope', scope);
+    if (qq) p.set('qq', qq);
+    if (grp) p.set('group', grp);
+    if (q) p.set('q', q);
+    const d = await api('/api/memories?' + p.toString());
+    memTotal = d.total;
+    memSelected.clear();
+    document.getElementById('mem-del-selected').style.display = 'none';
+    document.getElementById('mem-count').textContent = `共 ${d.total} 条 · 第 ${memPage + 1} 页`;
+    if (!d.list.length){ el.innerHTML = '<div class="placeholder">没有记忆</div>'; renderMemPager(0); return; }
+    el.innerHTML = d.list.map(m => renderMemCard(m)).join('');
+    renderMemPager(Math.ceil(d.total / MEM_SIZE));
+  }catch(e){ el.innerHTML = '<div class="placeholder">加载失败：' + e.message + '</div>'; }
+}
+
+let entitiesCache = null;
+async function ensureEntities(){
+  if (entitiesCache) return entitiesCache;
+  try{
+    entitiesCache = await api('/api/entities');
+    const sel = document.getElementById('mem-owner');
+    let h = '<option value="">全部用户/群</option>';
+    h += '<optgroup label="👤 用户">';
+    entitiesCache.users.forEach(u => h += `<option value="u:${u.id}">${u.isOwner ? '👑 ' : ''}${esc(u.name)} (${u.id})</option>`);
+    h += '</optgroup><optgroup label="👥 群">';
+    entitiesCache.groups.forEach(g => h += `<option value="g:${g.id}">群 ${g.id}</option>`);
+    h += '</optgroup>';
+    sel.innerHTML = h;
+    return entitiesCache;
+  }catch(e){ return null; }
+}
+function entityName(id, isGroup){
+  if (!entitiesCache) return String(id);
+  if (isGroup){ const g = entitiesCache.groups.find(x => x.id === id); return g ? '群 ' + g.id : String(id); }
+  const u = entitiesCache.users.find(x => x.id === id);
+  return u ? (u.isOwner ? '👑 ' : '') + u.name : String(id);
+}
+
+function renderMemCard(m){
+  const c = m.content, expanded = c.length > MEM_MAX_SHOW;
+  const shown = expanded ? c.slice(0, MEM_MAX_SHOW) + '…' : c;
+  return `
+  <div class="mem-card">
+    <div class="mem-head">
+      <input type="checkbox" class="mem-check" data-id="${m.id}" onchange="toggleMemSelect(${m.id})">
+      <span class="scope-tag ${scopeColor(m.scope)}">${m.scope}</span>
+      ${stars(m.importance)}
+      ${m.category ? `<span class="scope-tag global" style="font-size:11px">${esc(m.category)}</span>` : ''}
+      <span style="font-size:12px;color:var(--tx3)">#${m.id}</span>
+      <div class="mem-ops">
+        <button class="btn-mini" onclick="openMemEditorById(${m.id})">编辑</button>
+        <button class="btn-mini danger" onclick="deleteMem(${m.id})">删除</button>
+      </div>
+    </div>
+    <div class="mem-content" id="mc-${m.id}">${esc(shown)}</div>
+    ${expanded ? `<button class="mem-expand" onclick="toggleMemContent(${m.id})">展开全文</button>` : ''}
+    <div class="mem-meta">
+      ${m.qqId && m.scope === 'user' ? `<span>👤 ${esc(entityName(m.qqId, false))}</span>` : ''}
+      ${m.groupId && !m.qqId ? `<span>👥 ${esc(entityName(m.groupId, true))}</span>` : ''}
+      ${m.groupId && m.qqId ? `<span>👥 ${esc(entityName(m.groupId, true))} · 👤 ${esc(entityName(m.qqId, false))}</span>` : ''}
+      ${m.trigger ? `<span>触发词：${esc(m.trigger)}</span>` : ''}
+      ${m.useCount ? `<span>命中 ${m.useCount} 次</span>` : ''}
+      <span>更新于 ${m.updatedAt}</span>
+    </div>
+  </div>`;
+}
+
+let memFullShown = new Set();
+function toggleMemContent(id){
+  const btn = event.target;
+  const mem = memCache.find(x => x.id === id);
+  if (!mem) return;
+  if (memFullShown.has(id)){ memFullShown.delete(id); btn.textContent = '展开全文'; }
+  else { memFullShown.add(id); btn.textContent = '收起'; }
+  document.getElementById('mc-' + id).textContent = memFullShown.has(id) ? mem.content : mem.content.slice(0, MEM_MAX_SHOW) + '…';
+}
+
+let memCache = [];
+async function openMemEditorById(id){
+  try{
+    const d = await api('/api/memories?q=&page=0&size=200');
+    memCache = d.list;
+    const mem = memCache.find(x => x.id === id);
+    if (mem) openMemEditor(mem);
+  }catch(e){ toast('获取记忆失败：' + e.message, true); }
+}
+
+function openMemEditor(m){
+  document.getElementById('mem-modal-title').textContent = m ? `编辑记忆 #${m.id}` : '新增记忆';
+  document.getElementById('me-content').value = m ? m.content : '';
+  document.getElementById('me-trigger').value = m ? (m.trigger || '') : '';
+  document.getElementById('me-importance').value = m ? String(m.importance) : '3';
+  document.getElementById('me-category').value = m ? (m.category || '') : '';
+  document.getElementById('me-scope').value = m ? m.scope : 'global';
+  document.getElementById('me-owner').value = m ? String(m.scope === 'group' ? (m.groupId || '') : (m.qqId || '')) : '';
+  document.getElementById('me-member').value = m ? String(m.scope === 'group' && m.qqId ? m.qqId : '') : '';
+  syncOwnerWrap();
+  document.getElementById('mem-modal').dataset.id = m ? String(m.id) : '';
+  document.getElementById('mem-modal').classList.add('open');
+  setTimeout(() => document.getElementById('me-content').focus(), 50);
+}
+
+function closeMemEditor(){ document.getElementById('mem-modal').classList.remove('open'); }
+
+function syncOwnerWrap(){
+  const scope = document.getElementById('me-scope').value;
+  const ownerWrap = document.getElementById('me-owner-wrap');
+  const memberWrap = document.getElementById('me-member-wrap');
+  ownerWrap.style.display = scope === 'global' ? 'none' : 'flex';
+  memberWrap.style.display = scope === 'group' ? 'flex' : 'none';
+  document.getElementById('me-owner').placeholder = scope === 'group' ? '归属群号' : '归属 QQ 号';
+  document.getElementById('me-owner').previousSibling.textContent = scope === 'group' ? '归属群号（*）' : '归属 QQ 号（*）';
+}
+document.getElementById('me-scope').addEventListener('change', syncOwnerWrap);
+
+async function saveMemEditor(){
+  const content = document.getElementById('me-content').value.trim();
+  if (!content){ toast('内容不能为空', true); return; }
+  const id = document.getElementById('mem-modal').dataset.id;
+  const scope = document.getElementById('me-scope').value;
+  const ownerStr = document.getElementById('me-owner').value.trim();
+  const memberStr = document.getElementById('me-member').value.trim();
+  const body = {
+    content,
+    trigger: document.getElementById('me-trigger').value.trim(),
+    importance: Number(document.getElementById('me-importance').value),
+    category: document.getElementById('me-category').value.trim() || null,
+    scope,
+    // user：归属 QQ；group：群号 +（可选）群内成员 QQ；global：都不带
+    qqId: scope === 'user' ? (ownerStr ? Number(ownerStr) : null) : (scope === 'group' && memberStr ? Number(memberStr) : null),
+    groupId: scope === 'group' ? (ownerStr ? Number(ownerStr) : null) : null,
+  };
+  try{
+    if (id){ await api('/api/memories/' + id, { method: 'PUT', body: JSON.stringify(body) }); toast('已更新记忆 #' + id); }
+    else { const r = await api('/api/memories', { method: 'POST', body: JSON.stringify(body) }); toast('已新增记忆 #' + r.id); }
+    closeMemEditor();
+    loadMemories(memPage);
+  }catch(e){ toast('保存失败：' + e.message, true); }
+}
+
+function toggleMemSelect(id){
+  if (memSelected.has(id)) memSelected.delete(id); else memSelected.add(id);
+  document.getElementById('mem-del-selected').style.display = memSelected.size ? '' : 'none';
+}
+
+async function deleteMem(id){
+  if (!confirm('确定删除记忆 #' + id + ' 吗？（关联边会一并清理）')) return;
+  try{ const r = await api('/api/memories/' + id, { method: 'DELETE' }); toast(r.ok ? '已删除 #' + id : '删除失败', !r.ok); loadMemories(memPage); }
+  catch(e){ toast('删除失败：' + e.message, true); }
+}
+
+async function deleteSelectedMemories(){
+  const ids = [...memSelected];
+  if (!ids.length || !confirm('确定删除所选 ' + ids.length + ' 条记忆吗？')) return;
+  try{ const r = await api('/api/memories?ids=' + ids.join(','), { method: 'DELETE' }); toast('已删除 ' + r.deleted + ' 条'); loadMemories(memPage); }
+  catch(e){ toast('删除失败：' + e.message, true); }
+}
+
+function renderMemPager(pages){
+  const el = document.getElementById('mem-pager');
+  if (pages <= 1){ el.innerHTML = ''; return; }
+  let h = '';
+  for (let i = 0; i < pages; i++){
+    h += `<button class="btn-mini" style="${i === memPage ? 'border-color:var(--ac);color:var(--ac)' : ''}" onclick="loadMemories(${i})">${i + 1}</button>`;
+  }
+  el.innerHTML = h;
+}
+
+function esc(s){ return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ---------------- 记忆图谱（d3 放射树） ----------------
+let graphData = null, graphRootId = 0, graphAll = [], graphZoom = null;
+const G_SCOPE_COLOR = { global:'#b48cff', user:'#5fb8ff', group:'#6fe08a' };
+
+function graphShort(s, n){ s = (s||'').replace(/\n/g,' '); return s.length > n ? s.slice(0,n) + '…' : s; }
+
+function splitTriggerWords(t){ return (t||'').split(/[,，;；、\s]+/).map(x=>x.trim()).filter(x=>x && x.length>=2); }
+
+// 主触发词：取 trigger 第一个有效词（去重后）；无触发词归"未分类"——每条记忆只挂一个关键词，避免图爆炸
+function mainKw(m){
+  const kws = splitTriggerWords(m.trigger);
+  return kws.length ? kws[0] : '未分类';
+}
+function buildScopeTree(mems){
+  // 根 → scope 球 → (user/group: 实体) → 触发词 → 记忆
+  const root = { id:'root', type:'root', label:'记忆图谱', children:[] };
+  for (const scope of ['global','user','group']){
+    const scopeNode = { id:'scope-'+scope, type:'scope', label:scope, scope, children:[] };
+    root.children.push(scopeNode);
+    const scopeMems = mems.filter(m => m.scope === scope);
+    if (scope === 'global'){
+      // global：直接 触发词 → 记忆
+      const kwMap = new Map();
+      scopeMems.forEach(m => {
+        const kw = mainKw(m);
+        if (!kwMap.has(kw)) kwMap.set(kw, { id:'kw-g-'+kw, type:'kw', label:kw, children:[] });
+        kwMap.get(kw).children.push(memNode(m));
+      });
+      scopeNode.children = [...kwMap.values()];
+    } else {
+      // user/group：实体 → 触发词 → 记忆
+      const entMap = new Map();
+      scopeMems.forEach(m => {
+        const eid = scope === 'user' ? m.qqId : m.groupId;
+        if (!eid) return;
+        const key = (scope === 'user' ? 'u' : 'g') + eid;
+        if (!entMap.has(key)) entMap.set(key, { id:'ent-'+scope+'-'+eid, type:'entity', label:(scope==='user'?'👤 ':'👥 ')+eid, children:[] });
+        const ent = entMap.get(key);
+        const kw = mainKw(m);
+        let kwNode = ent.children.find(c => c.label === kw);
+        if (!kwNode){ kwNode = { id:'kw-'+key+'-'+kw, type:'kw', label:kw, children:[] }; ent.children.push(kwNode); }
+        kwNode.children.push(memNode(m));
+      });
+      scopeNode.children = [...entMap.values()];
+    }
+  }
+  return root;
+}
+function memNode(m){ return { id:'mem-'+m.id, type:'mem', memId:m.id, data:m, children:[] }; }
+
+function renderGraph(){
+  if (graphMode3D){ renderGraph3D(); return; }
+  if (!graphAll.length){ document.getElementById('graph-svg-wrap').innerHTML = '<div class="placeholder" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center">暂无记忆</div>'; return; }
+  const wrap = document.getElementById('graph-svg-wrap');
+  wrap.innerHTML = '';
+  document.getElementById('graph-hint').textContent = '💡 悬停节点→详情 · 拖动平移 · 滚轮缩放';
+  const W = wrap.clientWidth, H = wrap.clientHeight;
+  const R = Math.min(W, H)/2 - 30;
+  const svg = d3.select(wrap).append('svg').attr('width', W).attr('height', H).style('cursor','grab');
+  const rootG = svg.append('g');
+  // 拖动平移 + 滚轮缩放（初始居中）
+  graphZoom = d3.zoom().scaleExtent([0.4, 4]).on('zoom', ev => rootG.attr('transform', ev.transform));
+  svg.call(graphZoom).call(graphZoom.transform, d3.zoomIdentity.translate(W/2, H/2));
+  const linkG = rootG.append('g').attr('stroke','#2a3444').attr('fill','none').attr('stroke-width',1.2);
+  const nodeG = rootG.append('g');
+
+  // d3.tree 的 x=角度、y=半径 → 极坐标（0 度朝上）
+  const PX = d => { const a = d.x - Math.PI/2; return [Math.cos(a)*d.y, Math.sin(a)*d.y]; };
+
+  // 归属过滤
+  const fs = document.getElementById('grp-scope').value;
+  const mems = graphAll.filter(m => !fs || m.scope === fs);
+  const rootNode = buildScopeTree(mems);
+
+  const hier = d3.hierarchy(rootNode);
+  const tree = d3.tree().size([2*Math.PI, R]).separation((a,b) => (a.parent === b.parent ? 1.2 : 1.8) / Math.max(1, a.depth||1));
+  const layout = tree(hier);
+
+  // 节点样式按类型
+  const styleOf = d => {
+    const t = d.data.type;
+    if (t === 'root'){ return { r:22, fs:14, fill:'#2a3444', color:'#7c8aa0' }; }
+    if (t === 'scope'){ return { r:30, fs:20, fill:'#888', color:{global:'#b48cff',user:'#5fb8ff',group:'#6fe08a'}[d.data.scope] || '#888', bold:true }; }
+    if (t === 'entity'){ return { r:20, fs:16, fill:'#3d4c66', color:'#9fb6d4' }; }
+    if (t === 'kw'){ return { r:12, fs:14, fill:'#35415a', color:'#8fa3c4' }; }
+    const m = d.data.data;
+    return { r: 12 + (m.importance||2)*3, fs:15, fill:'#0000', color:{global:'#b48cff',user:'#5fb8ff',group:'#6fe08a'}[m.scope] || '#888' };
+  };
+
+  linkG.selectAll('path').data(layout.links())
+    .enter().append('path')
+    .attr('stroke-opacity', d => d.source.data.type === 'scope' ? 0.25 : (d.source.data.type === 'entity' ? 0.35 : 0.5))
+    .attr('d', d => { const s = PX(d.source), t = PX(d.target); return `M${s[0]},${s[1]}L${t[0]},${t[1]}`; });
+
+  const gs = nodeG.selectAll('g').data(layout.descendants())
+    .enter().append('g')
+    .attr('transform', d => { const p = PX(d); return `translate(${p[0]},${p[1]})`; })
+    .style('cursor', d => d.data.type === 'mem' ? 'pointer' : 'default');
+  gs.each(function(d){
+    const st = styleOf(d), g = d3.select(this);
+    g.append('circle')
+      .attr('r', st.r)
+      .attr('fill', d.data.type === 'mem' ? st.color : st.fill)
+      .attr('fill-opacity', d.data.type === 'mem' ? 0.16 : 0.85)
+      .attr('stroke', st.color)
+      .attr('stroke-width', d.data.type === 'scope' ? 3 : 1.5);
+    const label = d.data.type === 'mem' ? graphShort(d.data.data.content, 6) : d.data.label;
+    g.append('text')
+      .attr('dy','.35em')
+      .attr('font-size', st.fs)
+      .attr('font-weight', st.bold ? 700 : 400)
+      .attr('fill','#dfe6f0').attr('text-anchor','middle')
+      .attr('paint-order','stroke').attr('stroke','#10141c').attr('stroke-width',4).attr('stroke-linejoin','round')
+      .text(label);
+  });
+  gs.on('mouseover', (ev,d) => { if (d.data.type === 'mem') showGraphDetail(d.data.data); });
+  gs.on('mouseout', () => {});
+}
+
+function showGraphDetail(m){
+  if (!m) return;
+  const el = document.getElementById('graph-detail');
+  // 主人判断走 /api/entities 的 isOwner 标记（不硬编码 QQ 号）
+  const isOwner = (id) => (entitiesCache && entitiesCache.users || []).some(u => u.isOwner && String(u.id) === String(id));
+  const qq = m.qqId ? (isOwner(m.qqId) ? '👑 主人' : m.qqId) : null;
+  document.getElementById('graph-detail-body').innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+      <span class="scope-tag ${m.scope==='global'?'tag-global':m.scope==='user'?'tag-user':'tag-group'}" style="border:1px solid">${m.scope}</span>
+      <span style="color:#ffb84d">${'★'.repeat(m.importance||1)}</span>
+      <span style="color:var(--tx3)">#${m.id}</span>
+    </div>
+    <div style="line-height:1.6;white-space:pre-wrap;word-break:break-word">${esc(m.content)}</div>
+    <div style="margin-top:8px;color:var(--tx3);display:flex;flex-wrap:wrap;gap:10px">
+      ${qq ? `<span>👤 ${qq}</span>` : ''}${m.groupId ? `<span>👥 群 ${m.groupId}</span>` : ''}
+      ${m.trigger ? `<span>触发词：${esc(m.trigger)}</span>` : ''}${m.category ? `<span>分类：${esc(m.category)}</span>` : ''}
+    </div>`;
+  el.style.display = 'block';
+}
+
+async function loadGraph(){
+  const info = document.getElementById('grp-info');
+  try{
+    const d = await api('/api/memories?size=500');
+    graphAll = d.list || [];
+    info.textContent = `共 ${graphAll.length} 条记忆`;
+    renderGraph();
+  }catch(e){ info.textContent = '加载失败：' + e.message; }
+}
+async function renderGraph3D(){
+  const wrap = document.getElementById('graph-svg-wrap');
+  wrap.innerHTML = '';
+  if (window.__g3d){ try{ window.__g3d.dispose(); }catch(e){} window.__g3d = null; }
+  if (typeof THREE === 'undefined'){ wrap.innerHTML = '<div class="placeholder">three 库未加载</div>'; return; }
+  try{
+    const d = await api('/api/memories?size=500');
+    if (!d.list || !d.list.length){ wrap.innerHTML = '<div class="placeholder">暂无记忆</div>'; return; }
+    const mems = d.list;
+
+    // ---- 构建分层结构:scope → 触发词/用户/群 → 记忆 ----
+    const flat = [];
+    const edges = [];
+    const SCOPE_C = { global: 0xb48cff, user: 0x5fb8ff, group: 0x6fe08a };
+    for (const scope of ['global','user','group']){
+      const scopeId = 'scope-' + scope;
+      flat.push({ id: scopeId, type: 'scope', label: scope, scope, layer: 0 });
+      const sm = mems.filter(m => m.scope === scope);
+      if (scope === 'global'){
+        const kwMap = new Map();
+        sm.forEach(m => { const kw = mainKw(m); if (!kwMap.has(kw)) kwMap.set(kw, []); kwMap.get(kw).push(m); });
+        kwMap.forEach((mList, kw) => {
+          const midId = 'kw-g-' + kw;
+          flat.push({ id: midId, type: 'kw', label: kw, layer: 1 });
+          edges.push([scopeId, midId]);
+          mList.forEach(m => {
+            const memId = 'mem-' + m.id;
+            flat.push({ id: memId, type: 'mem', label: graphShort(m.content, 6), data: m, layer: 2 });
+            edges.push([midId, memId]);
+          });
+        });
+      } else {
+        const entMap = new Map();
+        sm.forEach(m => {
+          const eid = scope === 'user' ? m.qqId : m.groupId;
+          if (!eid) return;
+          const key = (scope === 'user' ? 'u' : 'g') + eid;
+          if (!entMap.has(key)) entMap.set(key, []);
+          entMap.get(key).push(m);
+        });
+        entMap.forEach((mList, key) => {
+          const eid = key.slice(1);
+          const midId = 'ent-' + scope + '-' + eid;
+          flat.push({ id: midId, type: 'entity', label: (scope === 'user' ? '👤 ' : '👥 ') + eid, layer: 1 });
+          edges.push([scopeId, midId]);
+          mList.forEach(m => {
+            const memId = 'mem-' + m.id;
+            flat.push({ id: memId, type: 'mem', label: graphShort(m.content, 6), data: m, layer: 2 });
+            edges.push([midId, memId]);
+          });
+        });
+      }
+    }
+
+    // ---- 分层同心球壳布局 ----
+    const LAYER_R = [48, 112, 190];
+    const layers = [[], [], []];
+    flat.forEach(n => layers[n.layer].push(n));
+    const posById = new Map();
+    layers.forEach((arr, li) => {
+      const r = LAYER_R[li], n = arr.length;
+      arr.forEach((node, i) => {
+        let v;
+        if (li === 0 && n === 3){
+          const a = -Math.PI/2 + i * Math.PI*2/3;
+          v = new THREE.Vector3(Math.cos(a)*r, 0, Math.sin(a)*r);
+        } else {
+          const phi = Math.acos(1 - 2*(i + 0.5)/n);
+          const theta = Math.PI * (1 + Math.sqrt(5)) * i;
+          v = new THREE.Vector3(Math.sin(phi)*Math.cos(theta)*r, Math.cos(phi)*r, Math.sin(phi)*Math.sin(theta)*r);
+        }
+        posById.set(node.id, v);
+      });
+    });
+
+    // ---- three 场景 ----
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x10141c);
+    const camera = new THREE.PerspectiveCamera(60, wrap.clientWidth/wrap.clientHeight, 1, 2000);
+    camera.position.set(0, 90, 440);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(wrap.clientWidth, wrap.clientHeight);
+    wrap.appendChild(renderer.domElement);
+    const group = new THREE.Group();
+    scene.add(group);
+
+    // 节点:球 + 文字精灵(保持 canvas 纵横比,字不瘪)
+    const meshes = [];
+    flat.forEach(node => {
+      const g = new THREE.Group();
+      let color, r;
+      if (node.type === 'scope'){ color = SCOPE_C[node.scope] || 0x888888; r = 17; }
+      else if (node.type === 'entity'){ color = 0x9fb6d4; r = 11; }
+      else if (node.type === 'kw'){ color = 0x8fa3c4; r = 9; }
+      else { color = SCOPE_C[node.data.scope] || 0x888888; r = 4.5 + (node.data.importance||1)*1.6; }
+      const mesh = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 20), new THREE.MeshBasicMaterial({ color }));
+      g.add(mesh);
+      mesh.userData = node;
+      const canvas = document.createElement('canvas');
+      canvas.width = 512; canvas.height = 96;
+      const ctx = canvas.getContext('2d');
+      ctx.font = (node.type === 'scope' ? 'bold 52px' : 'bold 40px') + ' "Microsoft YaHei","PingFang SC",sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.strokeStyle = 'rgba(16,20,28,0.9)'; ctx.lineWidth = 9; ctx.lineJoin = 'round';
+      ctx.strokeText(node.label, 256, 48);
+      ctx.fillStyle = node.type === 'mem' ? '#dfe6f0' : (node.type === 'scope' ? '#ffffff' : '#c8d4e8');
+      ctx.fillText(node.label, 256, 48);
+      const tex = new THREE.CanvasTexture(canvas);
+      const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false }));
+      const sw = (node.type === 'scope' ? 90 : 60) + node.label.length * (node.type === 'scope' ? 34 : 26);
+      const sh = sw * (96/512);            // 保持 canvas 比例 → 文字不变形
+      sp.scale.set(sw, sh, 1);
+      sp.position.set(0, r + sh/2 + 4, 0);
+      g.add(sp);
+      g.position.copy(posById.get(node.id));
+      group.add(g);
+      meshes.push(mesh);
+    });
+
+    // 层级连线
+    edges.forEach(([f, t]) => {
+      const p1 = posById.get(f), p2 = posById.get(t);
+      if (!p1 || !p2) return;
+      const geo = new THREE.BufferGeometry().setFromPoints([p1, p2]);
+      group.add(new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0x7c8aa0, transparent: true, opacity: 0.32 })));
+    });
+
+    // 极简轨道控制：相机绕 target（旋转/注视点）旋转，点击球=把 target 位移到球上
+    let rotY = 0.4, rotX = -0.1, dist = 470, drag = null, focusTarget = null;
+    const target = new THREE.Vector3(0, 0, 0);
+    const el = renderer.domElement;
+    el.style.cursor = 'grab';
+    el.addEventListener('mousedown', e => { drag = { x: e.clientX, y: e.clientY }; focusTarget = null; el.style.cursor = 'grabbing'; });
+    window.addEventListener('mousemove', e => {
+      if (drag){
+        rotY += (e.clientX - drag.x) * 0.005;
+        rotX += (e.clientY - drag.y) * 0.005;
+        rotX = Math.max(-1.4, Math.min(1.4, rotX));
+        drag = { x: e.clientX, y: e.clientY };
+      }
+    });
+    window.addEventListener('mouseup', () => { drag = null; el.style.cursor = 'grab'; });
+    el.addEventListener('wheel', e => { e.preventDefault(); dist = Math.max(260, Math.min(1100, dist + e.deltaY * 0.6)); }, { passive: false });
+
+    // Raycaster
+    const raycaster = new THREE.Raycaster(), mouse = new THREE.Vector2();
+    let hovered = null;
+    const pick = e => {
+      const rect = el.getBoundingClientRect();
+      mouse.x = ((e.clientX - rect.left)/rect.width)*2 - 1;
+      mouse.y = -((e.clientY - rect.top)/rect.height)*2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      const hits = raycaster.intersectObjects(meshes);
+      return hits.length ? hits[0].object : null;
+    };
+    const showNodeDetail = node => {
+      if (node.type === 'mem'){ showGraphDetail(node.data); return; }
+      document.getElementById('graph-detail-body').innerHTML =
+        `<div style="font-size:14px;font-weight:600;margin-bottom:6px">${node.type === 'scope' ? '🌐 ' + node.label : node.type === 'entity' ? '🔗 ' + node.label : '🔑 ' + node.label}</div>
+         <div style="color:var(--tx3);font-size:12px">${node.type === 'scope' ? '此分类下的记忆' : node.type === 'entity' ? '此用户/群在对应分类下的记忆' : '以此触发词为入口的记忆'}</div>`;
+      document.getElementById('graph-detail').style.display = 'block';
+    };
+    // 点击:把旋转/注视中心位移到该球(球保持居中,后续拖动绕它转)
+    const focusOn = node => {
+      const v = posById.get(node.id);
+      if (!v) return;
+      focusTarget = v.clone();
+    };
+    el.addEventListener('mousemove', e => {
+      const obj = pick(e);
+      if (obj !== hovered){
+        if (hovered){ hovered.parent.scale.set(1,1,1); }
+        hovered = obj;
+        if (hovered){ hovered.parent.scale.set(1.3,1.3,1.3); showNodeDetail(hovered.userData); }
+      }
+    });
+    el.addEventListener('click', e => { const obj = pick(e); if (obj){ showNodeDetail(obj.userData); focusOn(obj.userData); } });
+
+    // 渲染循环:悬停/拖拽/聚焦时停自转;聚焦时 target 平滑位移到目标球
+    let raf;
+    const tick = () => {
+      raf = requestAnimationFrame(tick);
+      if (focusTarget){
+        target.lerp(focusTarget, 0.1);
+        if (target.distanceTo(focusTarget) < 0.4) focusTarget = null;
+      } else if (!drag && !hovered){
+        rotY += 0.0015;                     // 无人操作且未悬停时才自转
+      }
+      // 相机绕 target 旋转 → 等价于图绕 target 转
+      camera.position.set(
+        target.x + dist * Math.cos(rotX) * Math.sin(rotY),
+        target.y + dist * Math.sin(rotX),
+        target.z + dist * Math.cos(rotX) * Math.cos(rotY)
+      );
+      camera.lookAt(target);
+      renderer.render(scene, camera);
+    };
+    tick();
+    window.__g3d = {
+      dispose(){ cancelAnimationFrame(raf); renderer.dispose(); el.remove(); },
+      home(){ focusTarget = new THREE.Vector3(0, 0, 0); },
+    };
+    document.getElementById('graph-hint').textContent = '💡 悬停节点→详情 · 拖动旋转 · 点击球→聚焦';
+    document.getElementById('grp-info').textContent = `3D · ${mems.length} 记忆 · ${flat.length} 节点`;
+  }catch(e){ wrap.innerHTML = '<div class="placeholder">3D 渲染失败：' + e.message + '</div>'; }
+}
+
+
+
+document.getElementById('grp-scope').addEventListener('change', renderGraph);
+
+// ---------------- 3D 球状图谱（Three.js ForceGraph3D） ----------------
+let graphMode3D = false;
+function toggleGraphMode(){
+  graphMode3D = !graphMode3D;
+  document.getElementById('graph-mode-btn').textContent = graphMode3D ? '🌲 2D 分层' : '🌐 3D 球状';
+  renderGraph();
+}
+// 返回原点：2D 平移回中心；3D 注视中心回 (0,0,0)
+function graphHome(){
+  if (graphMode3D){
+    if (window.__g3d && window.__g3d.home) window.__g3d.home();
+    return;
+  }
+  const svgEl = document.querySelector('#graph-svg-wrap svg');
+  if (!svgEl || !graphZoom) return;
+  const wrap = document.getElementById('graph-svg-wrap');
+  d3.select(svgEl).transition().duration(400)
+    .call(graphZoom.transform, d3.zoomIdentity.translate(wrap.clientWidth/2, wrap.clientHeight/2));
+}
+
+
+
+function buildItemRow(it, group){
+  const row = document.createElement('div');
+  row.className = 'cfg-row' + (it.type === 'text' ? ' ta-row' : '');
+  const left = document.createElement('div');
+  left.className = 'ct';
+  const restart = it.needsRestart ? ' <span class="restart-mark" title="该配置在程序启动时固定，保存后需要重启 QQBot 才能生效">*</span>' : '';
+  left.innerHTML = `<div class="lbl">${it.label}${restart}</div><div class="desc">${it.desc || ''}${it.needsRestart ? '<br><span style="color:var(--bad)">* 改动需重启生效</span>' : ''}</div>`;
+  row.appendChild(left);
+
+  const right = document.createElement('div');
+  right.className = 'right';
+  right.style.cssText = 'display:flex;align-items:center';
+  const tag = document.createElement('span');
+  tag.className = 'pending-tag'; tag.textContent = '待保存';
+  const saved = document.createElement('span');
+  saved.className = 'saved'; saved.textContent = '已保存';
+  right.appendChild(tag); right.appendChild(saved);
+
+  if (it.type === 'bool'){
+    const tg = document.createElement('div');
+    tg.className = 'toggle' + (it.value ? ' on' : '');
+    tg.dataset.value = String(!!it.value);
+    tg.addEventListener('click', () => {
+      const next = tg.dataset.value !== 'true';
+      tg.classList.toggle('on', next);
+      tg.dataset.value = String(next);
+      markDirty(row, 'Bot.' + it.path, next);
+    });
+    right.insertBefore(tg, tag);
+  } else if (it.path.endsWith('Model') && it.type === 'string'){
+    // 模型名：可手动填写；点「获取模型」拉取列表 → select 下拉选择
+    const wrap = document.createElement('div');
+    wrap.className = 'model-wrap';
+    const input = document.createElement('input');
+    input.type = 'text'; input.className = 'model-input';
+    input.value = it.value ?? '';
+    const sel = document.createElement('select');
+    sel.className = 'btn-mini';
+    sel.style.display = 'none';
+    sel.innerHTML = '<option value="">选择模型…</option>';
+    // 记录同组 BaseUrl/ApiKey 的输入框引用（获取模型时读"当前填写"的值而非记录值）
+    const baseInput = group.items.find(x => x.path.endsWith('BaseUrl'))?._input;
+    const keyInput = group.items.find(x => x.path.endsWith('ApiKey'))?._input;
+    const btn = document.createElement('button');
+    btn.className = 'btn-mini'; btn.textContent = '获取模型';
+    btn.addEventListener('click', async () => {
+      const baseUrl = (baseInput ? baseInput.value : (group.items.find(x => x.path.endsWith('BaseUrl'))?.value || '')).trim();
+      const apiKey = (keyInput ? keyInput.value : (group.items.find(x => x.path.endsWith('ApiKey'))?.value || '')).trim();
+      if (!baseUrl){ toast('请先填写该组的 API 地址', true); return; }
+      btn.textContent = '获取中…';
+      try{
+        const r = await api('/api/llm/models?baseUrl=' + encodeURIComponent(baseUrl) + '&apiKey=' + encodeURIComponent(apiKey));
+        if (r.error){ toast('获取失败：' + r.error, true); return; }
+        const models = r.models || [];
+        if (!models.length){ toast('API 未返回模型列表'); return; }
+        sel.innerHTML = '<option value="">选择模型（共 ' + models.length + ' 个）…</option>' +
+          models.map(m => `<option value="${m.replace(/"/g, '&quot;')}">${m}</option>`).join('');
+        sel.style.display = '';
+        sel.focus();
+        toast('已获取 ' + models.length + ' 个模型，从下拉选择或手动输入');
+      }catch(e){ toast('获取失败：' + e.message, true); }
+      finally{ btn.textContent = '获取模型'; }
+    });
+    sel.addEventListener('change', () => {
+      if (!sel.value) return;
+      input.value = sel.value;
+      markDirty(row, 'Bot.' + it.path, sel.value);
+    });
+    input.addEventListener('change', () => markDirty(row, 'Bot.' + it.path, input.value));
+    wrap.appendChild(input); wrap.appendChild(btn); wrap.appendChild(sel);
+    right.insertBefore(wrap, tag);
+  } else if (it.type === 'text'){
+    // 多行文本：textarea 自增长（高度随内容）+ 超宽自动换行（行布局为纵向：标签在上、文本框在下）
+    const ta = document.createElement('textarea');
+    ta.value = it.value ?? '';
+    ta.placeholder = it.desc || '';
+    ta.addEventListener('input', () => autoGrow(ta));
+    ta.addEventListener('change', () => markDirty(row, 'Bot.' + it.path, ta.value));
+    right.insertBefore(ta, tag);
+    requestAnimationFrame(() => autoGrow(ta));   // 布局完成后按内容撑开（rAF 保证）
+  } else {
+    const input = document.createElement('input');
+    input.type = it.type === 'int' || it.type === 'double' ? 'number' : 'text';
+    if (it.type === 'double') input.step = '0.1';
+    input.value = it.value ?? '';
+    // 记录 BaseUrl/ApiKey 输入框引用（获取模型列表时读当前填写值）
+    if (it.path.endsWith('BaseUrl') || it.path.endsWith('ApiKey')) it._input = input;
+    input.addEventListener('change', () => {
+      let val;
+      if (it.type === 'int'){ val = parseInt(input.value, 10); if (isNaN(val)){ toast('请输入数字', true); return; } }
+      else if (it.type === 'double'){ val = parseFloat(input.value); if (isNaN(val)){ toast('请输入数字', true); return; } }
+      else val = input.value;
+      markDirty(row, 'Bot.' + it.path, val);
+    });
+    right.insertBefore(input, tag);
+  }
+  row.appendChild(right);
+  return row;
+}
+
+function buildGroup(g){
+  const grp = document.createElement('div');
+  grp.className = 'group';
+
+  const head = document.createElement('div');
+  head.className = 'group-head';
+  const arrow = document.createElement('div');
+  arrow.className = 'arrow';
+  const gt = document.createElement('div');
+  gt.className = 'gt';
+  gt.innerHTML = `<div class="lbl">${g.label}</div><div class="desc">${g.desc || ''}</div>`;
+  head.appendChild(arrow); head.appendChild(gt);
+
+  let body, mainToggle = null;
+  if (g.mainSwitch){
+    mainToggle = document.createElement('div');
+    mainToggle.className = 'toggle' + (g.mainValue ? ' on' : '');
+    mainToggle.dataset.value = String(!!g.mainValue);
+    mainToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const next = mainToggle.dataset.value !== 'true';
+      mainToggle.classList.toggle('on', next);
+      mainToggle.dataset.value = String(next);
+      pending.set('Bot.' + g.mainSwitch, next);
+      const row = head; // 主开关的待保存标记显示在标题右侧
+      const tg = row.querySelector('.pending-tag-main') || (() => { const s = document.createElement('span'); s.className = 'pending-tag-main'; s.style.cssText = 'color:var(--warn);font-size:12px;margin-left:6px;display:none'; s.textContent = '待保存'; row.appendChild(s); return s; })();
+      tg.style.display = 'inline';
+      body.classList.toggle('open', next || grp.dataset.manual === '1');
+      if (next || grp.dataset.manual === '1') body.querySelectorAll('textarea').forEach(autoGrow);   // 展开后重算高度
+    });
+    head.appendChild(mainToggle);
+  }
+
+  body = document.createElement('div');
+  body.className = 'group-body' + (g.mainValue ? ' open' : '');
+  (g.items || []).forEach(it => body.appendChild(buildItemRow(it, g)));
+
+  head.addEventListener('click', () => {
+    const willOpen = !body.classList.contains('open');
+    grp.dataset.manual = grp.dataset.manual === '1' ? '0' : '1';
+    arrow.classList.toggle('open');
+    body.classList.toggle('open');
+    if (willOpen) body.querySelectorAll('textarea').forEach(autoGrow);   // 展开后重算高度（收起时布局不可见算不准）
+  });
+  if (g.mainValue) arrow.classList.add('open');
+
+  grp.appendChild(head); grp.appendChild(body);
+  return grp;
+}
+
+async function loadSwitches(){
+  const el = document.getElementById('switches');
+  try{
+    groupsCache = await api('/api/config/switches');
+    pending.clear();
+    el.innerHTML = '';
+    groupsCache.forEach(g => el.appendChild(buildGroup(g)));
+  }catch(e){ el.innerHTML = '<div class="placeholder">加载开关失败：' + e.message + '</div>'; }
+}
+
+async function saveAll(){
+  if (pending.size === 0){ toast('没有待保存的改动'); return; }
+  try{
+    const body = [...pending.entries()].map(([path, value]) => ({ path, value }));
+    const r = await api('/api/config/switches', { method: 'PUT', body: JSON.stringify(body) });
+    toast('已保存并热更新 ' + r.changed + ' 项' + (r.changed < body.length ? '（' + (body.length - r.changed) + ' 项无变化）' : ''));
+    document.querySelectorAll('.cfg-row.dirty').forEach(x => x.classList.remove('dirty'));
+    document.querySelectorAll('.pending-tag-main').forEach(x => x.style.display = 'none');
+    pending.clear();
+  }catch(e){ toast('保存失败：' + e.message, true); }
+}
+
+function revertAll(){
+  if (pending.size === 0){ toast('没有待撤回的改动'); return; }
+  loadSwitches();
+  toast('已撤回全部未保存改动');
+}
+
+document.getElementById('save-all').addEventListener('click', saveAll);
+document.getElementById('revert-all').addEventListener('click', revertAll);
+
+// ---- 提示词页 ----
+let promptPending = new Map();
+let promptCache = [];
+
+function promptGroupKey(p){
+  const parts = p.split('.');
+  if (parts[0] === 'GlobalPrePrompt' || parts[0] === 'GlobalPostPrompt') return 'global';
+  if (parts[0] === 'ReplyExtraction') return 'extract';
+  return parts.slice(0, 2).join('.');   // 场景: Owner.SystemPrompt → Owner
+}
+
+function promptGroupLabel(key){
+  if (key === 'global') return '全局';
+  if (key === 'extract') return '回复提取配置';
+  const map = { 'Owner':'主人', 'Guest':'客人', 'OwnerPrivate':'私聊 · 主人', 'GuestPrivate':'私聊 · 客人', 'OwnerGroup':'群聊 · 主人', 'GuestGroup':'群聊 · 客人' };
+  return map[key] || key;
+}
+
+function buildPromptRow(p){
+  const row = document.createElement('div');
+  row.className = 'cfg-row ta-row';
+  const left = document.createElement('div');
+  left.className = 'ct';
+  left.innerHTML = `<div class="lbl">${p.label}</div><div class="desc">${p.desc || ''}</div>`;
+  row.appendChild(left);
+  const right = document.createElement('div');
+  right.className = 'right';
+  right.style.cssText = 'display:flex;align-items:center';
+  const tag = document.createElement('span');
+  tag.className = 'pending-tag'; tag.textContent = '待保存';
+  right.appendChild(tag);
+  if (p.type === 'text'){
+    const ta = document.createElement('textarea');
+    ta.value = p.value ?? '';
+    ta.placeholder = p.desc || '';
+    ta.addEventListener('input', () => autoGrow(ta));
+    ta.addEventListener('change', () => { promptPending.set('Bot.' + p.path, ta.value); row.classList.add('dirty'); });
+    right.insertBefore(ta, tag);
+    requestAnimationFrame(() => autoGrow(ta));   // 布局完成后按内容撑开（rAF 保证）
+  } else {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = p.value ?? '';
+    input.addEventListener('change', () => { promptPending.set('Bot.' + p.path, input.value); row.classList.add('dirty'); });
+    right.insertBefore(input, tag);
+  }
+  row.appendChild(right);
+  return row;
+}
+
+function buildPromptGroup(key, items){
+  const grp = document.createElement('div');
+  grp.className = 'group';
+  const head = document.createElement('div');
+  head.className = 'group-head';
+  const arrow = document.createElement('div');
+  arrow.className = 'arrow open';
+  const gt = document.createElement('div');
+  gt.className = 'gt';
+  gt.innerHTML = `<div class="lbl">${promptGroupLabel(key)}</div><div class="desc">${items.length} 项</div>`;
+  head.appendChild(arrow); head.appendChild(gt);
+  head.addEventListener('click', () => {
+    const willOpen = !body.classList.contains('open');
+    arrow.classList.toggle('open'); body.classList.toggle('open');
+    if (willOpen) body.querySelectorAll('textarea').forEach(autoGrow);   // 展开后重算高度
+  });
+  const body = document.createElement('div');
+  body.className = 'group-body open';
+  items.forEach(p => body.appendChild(buildPromptRow(p)));
+  grp.appendChild(head); grp.appendChild(body);
+  return grp;
+}
+
+async function loadPrompts(){
+  const el = document.getElementById('prompts');
+  try{
+    promptCache = await api('/api/config/prompts');
+    promptPending.clear();
+    const groups = {};
+    promptCache.forEach(p => {
+      const k = promptGroupKey(p.path);
+      (groups[k] = groups[k] || []).push(p);
+    });
+    el.innerHTML = '';
+    Object.keys(groups).forEach(k => el.appendChild(buildPromptGroup(k, groups[k])));
+  }catch(e){ el.innerHTML = '<div class="placeholder">加载提示词失败：' + e.message + '</div>'; }
+}
+
+async function savePrompts(){
+  if (promptPending.size === 0){ toast('没有待保存的改动'); return; }
+  try{
+    const body = [...promptPending.entries()].map(([path, value]) => ({ path, value }));
+    const r = await api('/api/config/prompts', { method: 'PUT', body: JSON.stringify(body) });
+    toast('已保存并热更新 ' + r.changed + ' 项');
+    document.querySelectorAll('#prompts .cfg-row.dirty').forEach(x => x.classList.remove('dirty'));
+    promptPending.clear();
+  }catch(e){ toast('保存失败：' + e.message, true); }
+}
+
+function revertPrompts(){
+  if (promptPending.size === 0){ toast('没有待撤回的改动'); return; }
+  loadPrompts();
+  toast('已撤回全部未保存改动');
+}
+
+document.getElementById('prompt-save').addEventListener('click', savePrompts);
+document.getElementById('prompt-revert').addEventListener('click', revertPrompts);
+
+// ---- Tools 管理页 ----
+let toolsCache = [];
+const toolPending = new Map();   // key: "{name}:enabled"(bool=disabled) / "{name}:desc"(string)
+
+function buildToolRow(t){
+  const row = document.createElement('div');
+  row.className = 'cfg-row ta-row';
+  const left = document.createElement('div');
+  left.className = 'ct';
+  const st = t.disabled
+    ? '<span class="scope-tag" style="color:#6b7280;border-color:#6b728055">已停用</span>'
+    : '<span class="scope-tag group">启用中</span>';
+  left.innerHTML = `
+    <div class="lbl"><code style="color:var(--ac);font-size:13px">${esc(t.name)}</code> ${st}${t.overridden ? '<span class="scope-tag user" style="margin-left:4px">已覆盖描述</span>' : ''}</div>
+    <div class="desc" style="margin-top:4px">默认：${esc(t.defaultDesc)}</div>`;
+  row.appendChild(left);
+
+  const right = document.createElement('div');
+  right.className = 'right';
+  right.style.cssText = 'display:flex;align-items:center;gap:10px';
+  const tag = document.createElement('span');
+  tag.className = 'pending-tag'; tag.textContent = '待保存';
+  right.appendChild(tag);
+
+  // 启停开关（开=启用，t.disabled=false）
+  const toggle = document.createElement('div');
+  toggle.className = 'toggle' + (t.disabled ? '' : ' on');
+  toggle.dataset.value = String(!t.disabled);
+  toggle.title = t.disabled ? '点击启用' : '点击停用';
+  toggle.addEventListener('click', () => {
+    const nextOn = toggle.dataset.value !== 'true';
+    toggle.classList.toggle('on', nextOn);
+    toggle.dataset.value = String(nextOn);
+    toggle.title = nextOn ? '点击停用' : '点击启用';
+    toolPending.set(t.name + ':enabled', !nextOn);   // 存 disabled 状态
+    row.classList.add('dirty');
+  });
+  right.insertBefore(toggle, tag);
+
+  // 描述 textarea：初始=当前生效描述；与默认一致保存时清空覆盖
+  const ta = document.createElement('textarea');
+  ta.value = t.desc ?? '';
+  ta.placeholder = '留空 = 使用代码默认描述';
+  ta.addEventListener('input', () => autoGrow(ta));
+  ta.addEventListener('change', () => {
+    toolPending.set(t.name + ':desc', ta.value);
+    row.classList.add('dirty');
+  });
+  right.appendChild(ta);
+  requestAnimationFrame(() => autoGrow(ta));
+
+  row.appendChild(right);
+  return row;
+}
+
+async function loadTools(){
+  const el = document.getElementById('tools');
+  try{
+    toolsCache = await api('/api/tools');
+    toolPending.clear();
+    el.innerHTML = '';
+    toolsCache.forEach(t => el.appendChild(buildToolRow(t)));
+  }catch(e){ el.innerHTML = '<div class="placeholder">加载工具失败：' + e.message + '</div>'; }
+}
+
+async function saveTools(){
+  if (toolPending.size === 0){ toast('没有待保存的改动'); return; }
+  const body = [];
+  // 启停：汇总所有工具的 disabled 状态（未改动的用原值）→ 一次写 Tools.Disabled 数组
+  const disabledList = toolsCache
+    .map(t => toolPending.has(t.name + ':enabled') ? (toolPending.get(t.name + ':enabled') ? t.name : null) : (t.disabled ? t.name : null))
+    .filter(Boolean);
+  body.push({ path: 'Bot.Tools.Disabled', value: disabledList });
+  // 描述：与默认一致 → 存空（清除覆盖）；否则存覆盖
+  toolsCache.forEach(t => {
+    if (toolPending.has(t.name + ':desc')){
+      const v = toolPending.get(t.name + ':desc');
+      body.push({ path: 'Bot.Tools.Descriptions.' + t.name, value: (v === t.defaultDesc ? '' : v) });
+    }
+  });
+  try{
+    const r = await api('/api/tools', { method: 'PUT', body: JSON.stringify(body) });
+    toast('已保存并热更新 ' + r.changed + ' 项');
+    loadTools();
+  }catch(e){ toast('保存失败：' + e.message, true); }
+}
+
+function revertTools(){
+  if (toolPending.size === 0){ toast('没有待撤回的改动'); return; }
+  loadTools();
+  toast('已撤回全部未保存改动');
+}
+
+document.getElementById('tools-save').addEventListener('click', saveTools);
+document.getElementById('tools-revert').addEventListener('click', revertTools);
+
+// ---- !命令控制台 ----
+const consoleHistory = [];
+let consoleHistIdx = -1;
+
+function consolePrint(text, cls){
+  const out = document.getElementById('console-out');
+  const line = document.createElement('div');
+  if (cls) line.style.color = cls;
+  line.style.marginBottom = '4px';
+  line.textContent = text;
+  out.appendChild(line);
+  out.scrollTop = out.scrollHeight;
+}
+
+async function runConsoleCmd(){
+  const input = document.getElementById('console-input');
+  const cmd = input.value.trim();
+  if (!cmd) return;
+  consolePrint('> ' + cmd, 'var(--ac)');
+  input.value = '';
+  try{
+    const r = await api('/api/console/run', { method: 'POST', body: JSON.stringify({ cmd }) });
+    if (r.error) consolePrint(r.error, 'var(--bad)');
+    else consolePrint(r.reply === null ? '（命令已自行发送，无文本回复）' : r.reply, '');
+  }catch(e){ consolePrint('执行失败：' + e.message, 'var(--bad)'); }
+  consoleHistory.push(cmd);
+  consoleHistIdx = consoleHistory.length;
+  document.getElementById('console-out').scrollTop = document.getElementById('console-out').scrollHeight;
+}
+
+async function loadConsoleCatalog(){
+  try{
+    const list = await api('/api/console/commands');
+    const el = document.getElementById('console-hints');
+    el.innerHTML = '';
+    list.forEach(c => {
+      const chip = document.createElement('button');
+      chip.className = 'btn-mini';
+      chip.title = c.usage + ' —— ' + c.description;
+      chip.textContent = '!' + c.name;
+      chip.addEventListener('click', () => {
+        const input = document.getElementById('console-input');
+        input.value = c.usage.split(' ')[0];   // 填入命令名（!xxx）
+        input.focus();
+      });
+      el.appendChild(chip);
+    });
+  }catch(e){ /* 目录加载失败不阻塞使用 */ }
+}
+
+document.getElementById('console-run').addEventListener('click', runConsoleCmd);
+document.getElementById('console-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter'){ runConsoleCmd(); return; }
+  if (e.key === 'ArrowUp'){
+    e.preventDefault();
+    if (consoleHistIdx > 0){ consoleHistIdx--; e.target.value = consoleHistory[consoleHistIdx] || ''; }
+    return;
+  }
+  if (e.key === 'ArrowDown'){
+    e.preventDefault();
+    if (consoleHistIdx < consoleHistory.length){ consoleHistIdx++; e.target.value = consoleHistory[consoleHistIdx] || ''; }
+  }
+});
+document.getElementById('console-clear').addEventListener('click', () => {
+  document.getElementById('console-out').innerHTML = '';
+  consolePrint('—— 输出已清空 ——', 'var(--tx3)');
+});
+
+// ---- Debug 日志页 ----
+const LOG_LIMIT = 200;
+let logOffset = 0, logTotal = 0;
+
+const LOG_LEVEL_COLOR = { DBG: '#6b7280', INF: '', WRN: '#ef9f27', ERR: '#e24b4a', CRT: '#e24b4a', TRC: '#6b7280' };
+
+function logLineClass(lv){ return LOG_LEVEL_COLOR[lv] ?? ''; }
+
+function renderLogLines(list){
+  const out = document.getElementById('log-out');
+  list.forEach(l => {
+    const div = document.createElement('div');
+    div.style.color = LOG_LEVEL_COLOR[l.level] || 'var(--tx)';
+    div.style.whiteSpace = 'pre-wrap';
+    div.textContent = l.text;
+    out.appendChild(div);
+  });
+  out.scrollTop = out.scrollHeight;
+}
+
+async function loadLogs(offset, reset){
+  const date = document.getElementById('log-date').value || '';
+  const level = document.getElementById('log-level').value || '';
+  const q = document.getElementById('log-q').value.trim();
+  const el = document.getElementById('log-out');
+  const info = document.getElementById('log-info');
+  try{
+    if (reset){ el.innerHTML = ''; logOffset = 0; }
+    const r = await api(`/api/logs?date=${encodeURIComponent(date)}&level=${encodeURIComponent(level)}&q=${encodeURIComponent(q)}&offset=${offset}&limit=${LOG_LIMIT}`);
+    if (r.error){ info.textContent = r.error; return; }
+    logTotal = r.total;
+    renderLogLines(r.lines || []);
+    logOffset = offset + (r.lines || []).length;
+    info.textContent = `${r.date} · 共 ${logTotal} 条` + (level ? ` · 级别 ${level}` : '') + (q ? ` · 关键词"${q}"` : '');
+    document.getElementById('log-more').style.display = logOffset < logTotal ? '' : 'none';
+    if (reset && el.children.length === 0) info.textContent = `${r.date} · 无匹配日志`;
+  }catch(e){ info.textContent = '加载失败：' + e.message; }
+}
+
+async function loadLogDays(){
+  try{
+    const days = await api('/api/logs/days');
+    const sel = document.getElementById('log-date');
+    sel.innerHTML = days.length
+      ? days.map(d => `<option value="${d}">${d}</option>`).join('')
+      : '<option value="">（无日志）</option>';
+    if (days.length && !sel.value) sel.value = days[0];   // 默认最新一天
+    return days.length > 0;
+  }catch(e){ return false; }
+}
+
+async function openLogs(){
+  const has = await loadLogDays();
+  loadLogs(0, true);
+  return has;
+}
+
+document.getElementById('log-more-btn').addEventListener('click', () => loadLogs(logOffset, false));
+document.getElementById('log-level').addEventListener('change', () => loadLogs(0, true));
+document.getElementById('log-q').addEventListener('keydown', e => { if (e.key === 'Enter') loadLogs(0, true); });
+
+// 自动刷新（仅当停留在最新一页且勾选时，5s 轮询）
+setInterval(() => {
+  const auto = document.getElementById('log-auto');
+  if (!auto || !auto.checked || logOffset > LOG_LIMIT) return;
+  const p = document.getElementById('page-logs');
+  if (!p.classList.contains('active')) return;
+  const date = document.getElementById('log-date').value || '';
+  const level = document.getElementById('log-level').value || '';
+  const q = document.getElementById('log-q').value.trim();
+  const el = document.getElementById('log-out');
+  api(`/api/logs?date=${encodeURIComponent(date)}&level=${encodeURIComponent(level)}&q=${encodeURIComponent(q)}&offset=0&limit=${LOG_LIMIT}`)
+    .then(r => {
+      if (r.error || !r.lines) return;
+      logTotal = r.total;
+      const newTotal = r.lines.length;
+      // 仅在内容变化时重绘（避免打断阅读）
+      const first = el.children[0]?.textContent;
+      if (first !== (r.lines[0] || {}).text){
+        el.innerHTML = '';
+        renderLogLines(r.lines);
+        logOffset = newTotal;
+        document.getElementById('log-info').textContent = `${r.date} · 共 ${logTotal} 条`;
+        document.getElementById('log-more').style.display = logOffset < logTotal ? '' : 'none';
+      }
+    })
+    .catch(() => {});
+}, 5000);
+
+// 图谱页高度=视口剩余(实测 header 高度),消除估算误差导致的滚动条
+function fitGraphPage(){
+  const p = document.getElementById('page-graph');
+  if (!p.classList.contains('active')) return;
+  p.style.height = (window.innerHeight - document.querySelector('header').offsetHeight) + 'px';
+}
+let gdResizeTimer = null;
+window.addEventListener('resize', () => {
+  fitGraphPage();
+  const p = document.getElementById('page-graph');
+  if (!p.classList.contains('active')) return;
+  clearTimeout(gdResizeTimer);
+  gdResizeTimer = setTimeout(renderGraph, 250);   // renderGraph 内部分派 2D/3D,重建适配新尺寸
+});
+
+document.querySelectorAll('nav a').forEach(a => {
+  a.addEventListener('click', () => {
+    document.querySelectorAll('nav a').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.page').forEach(x => x.classList.remove('active'));
+    a.classList.add('active');
+    document.getElementById('page-' + a.dataset.page).classList.add('active');
+    if (a.dataset.page === 'stats') loadStats();
+    if (a.dataset.page === 'switches') loadSwitches();
+    if (a.dataset.page === 'prompts') loadPrompts();
+    if (a.dataset.page === 'tools') loadTools();
+    if (a.dataset.page === 'console') loadConsoleCatalog();
+    if (a.dataset.page === 'logs') openLogs();
+    if (a.dataset.page === 'memories'){ ensureEntities(); loadMemories(0); }
+    if (a.dataset.page === 'graph'){ fitGraphPage(); loadGraph(); }
+  });
+});
+
+loadStats();
+setInterval(loadStats, 60000);
+</script>
+
+</body>
+</html>

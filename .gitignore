@@ -1,0 +1,30 @@
+# 外部依赖（QQ 安装程序 / NapCat 安装包，体积大，不入库）
+外部依赖/
+
+# 构建产物
+bin/
+obj/
+*.user
+
+# 运行数据（数据库/日志/缓存/生图）
+data/
+*.db
+*.db-shm
+*.db-wal
+*.log
+vision_cache/
+memo.txt
+
+# 本地环境
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# 凭据相关（防误提交）
+*.token
+.env
+
+# 临时/调试文件
+*.tmp
