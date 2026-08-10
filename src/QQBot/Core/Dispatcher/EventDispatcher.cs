@@ -35,6 +35,16 @@ public sealed class EventDispatcher
     /// <summary>会话级串行锁：同一会话（private:{qq} / group:{群}）的消息按序处理，跨会话并行</summary>
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _sessionLocks = new();
 
+    /// <summary>消息合并窗口（按会话）：QQ「转发+留言」等连续消息合并成整体回复；0 秒=关闭</summary>
+    private readonly ConcurrentDictionary<string, MergeWindow> _mergeWindows = new();
+
+    /// <summary>单个会话的合并缓冲（Buffer 需在 lock 内访问；Timer 到期触发 flush）</summary>
+    private sealed class MergeWindow
+    {
+        public List<IncomingMessage> Buffer { get; } = new();
+        public CancellationTokenSource? Timer { get; set; }
+    }
+
     /// <summary>ping 测试匹配：整条消息仅由 ping + 空白/标点/波浪号组成才回显 pong（防止子串误触发）</summary>
     private static readonly Regex PingPattern = new(
         @"^\s*ping[\s\p{P}~～]*$",
@@ -80,12 +90,24 @@ public sealed class EventDispatcher
         // 2. 触发过滤（无副作用，在锁外执行以降低锁竞争）
         if (!TryBuildIncoming(evt, out var msg))
         {
+            // 2.5 群聊未 @ 的消息：若该会话正处于合并窗口（转发+留言场景的第二条留言无 @），并入缓冲
+            if (TryEnqueuePassive(evt, ct)) return;
             _logger.LogDebug("消息未通过触发过滤: uid={Uid} {Type}", evt.UserId, evt.MessageType);
             return;
         }
 
+        // 2.6 消息合并窗口（Trigger.MergeSeconds>0 时）：触发后等待窗口，把连续消息合并成整体回复；
+        //     窗口内再次 @ 机器人 → 立即触发已收集的批次，本消息开启新窗口（拆分为两次回复）
+        if (_options.Trigger.MergeSeconds > 0 && await TryMergeAsync(msg, ct)) return;
+
         // 3. 两级调度：全局并发门（限制总并发）→ 会话串行锁（同会话按序）
-        var sessionLock = _sessionLocks.GetOrAdd(msg!.SessionKey, _ => new SemaphoreSlim(1, 1));
+        await ProcessImmediatelyAsync(msg, ct);
+    }
+
+    /// <summary>直接走两级调度处理一条消息（合并窗口到期/拆分时的统一出口）</summary>
+    private async Task ProcessImmediatelyAsync(IncomingMessage msg, CancellationToken ct)
+    {
+        var sessionLock = _sessionLocks.GetOrAdd(msg.SessionKey, _ => new SemaphoreSlim(1, 1));
         await _globalGate.WaitAsync(ct);
         try
         {
@@ -116,6 +138,135 @@ public sealed class EventDispatcher
         {
             _globalGate.Release();
         }
+    }
+
+    /// <summary>
+    /// 合并窗口判定（Trigger.MergeSeconds>0 时由 HandleAsync 调用）。
+    /// 返回 true = 消息已进入合并缓冲（等待窗口到期整体回复），或已触发拆分（不再直接处理）。
+    /// 窗口内再次 @ 机器人 = 新一轮召唤 → 已收集的批次立即触发，本消息开启新窗口。
+    /// </summary>
+    private async Task<bool> TryMergeAsync(IncomingMessage msg, CancellationToken ct)
+    {
+        // 主人命令（! 前缀）不合并，立即处理
+        if (msg.PlainText.TrimStart().StartsWith(_options.Command.Prefix)) return false;
+
+        var window = _mergeWindows.GetOrAdd(msg.SessionKey, _ => new MergeWindow());
+        bool split = false;
+        lock (window)
+        {
+            if (window.Buffer.Count > 0 && !msg.IsPrivate && IsAtBot(msg.Segments, msg.SelfId))
+            {
+                split = true;   // 群聊窗口内再次 @：拆分
+            }
+            else
+            {
+                window.Buffer.Add(msg);
+                if (window.Buffer.Count == 1) StartMergeTimer(window, msg.SessionKey, ct);
+                return true;
+            }
+        }
+
+        // 拆分：立即触发已收集的批次，本消息开启新窗口
+        var batch = TakeMergeBatch(window);
+        StartMergeTimer(window, msg.SessionKey, ct);
+        lock (window) window.Buffer.Add(msg);
+        _logger.LogInformation("合并窗口拆分（再次 @）：{Session} 先触发已收集 {N} 条消息", msg.SessionKey, batch.Count);
+        _ = FlushMergeAsync(batch, ct);
+        return true;
+    }
+
+    /// <summary>群聊未触发消息（无 @）并入活跃窗口缓冲；返回 true = 已并入（转发+留言的第二条留言）</summary>
+    private bool TryEnqueuePassive(OneBotEvent evt, CancellationToken ct)
+    {
+        if (evt.MessageType != "group" || evt.GroupId == 0) return false;
+        // 自动上文注入开启时：群聊触发后由 get_group_msg_history 拉取上文（窗口延迟 n 秒期间到达的
+        // 留言会被拉取到），若再并入缓冲会造成留言内容重复注入——此时直接丢弃，靠注入覆盖
+        if (_options.Prompt.AutoInjectGroupHistory) return false;
+        var sessionKey = $"group:{evt.GroupId}";
+        if (!_mergeWindows.TryGetValue(sessionKey, out var window)) return false;
+        lock (window)
+        {
+            if (window.Buffer.Count == 0 || window.Timer is null) return false;
+            var msg = new IncomingMessage(evt.MessageId, evt.SelfId, evt.UserId, evt.UserName ?? "?",
+                evt.GroupId, false, GetPlainText(evt.Message), evt.Message ?? new JsonArray(),
+                sessionKey, evt.UserId == _options.OwnerId,
+                ExtractQuoteId(evt.Message), ExtractImageUrls(evt.Message));
+            window.Buffer.Add(msg);
+        }
+        _logger.LogDebug("合并窗口并入未触发消息（{Session}）", sessionKey);
+        return true;
+    }
+
+    /// <summary>启动（或重置）会话的合并窗口定时器；到期后取出缓冲整体触发</summary>
+    private void StartMergeTimer(MergeWindow window, string sessionKey, CancellationToken ct)
+    {
+        var seconds = Math.Max(1, _options.Trigger.MergeSeconds);
+        CancellationTokenSource timer;
+        lock (window)
+        {
+            window.Timer?.Cancel();
+            window.Timer = timer = new CancellationTokenSource();
+        }
+        _ = Task.Run(async () =>
+        {
+            try { await Task.Delay(seconds * 1000, timer.Token); }
+            catch (TaskCanceledException) { return; }
+            var batch = TakeMergeBatch(window);
+            if (batch.Count > 0) await FlushMergeAsync(batch, ct);
+            else _logger.LogDebug("合并窗口到期但无消息（{Session}）", sessionKey);
+        });
+    }
+
+    /// <summary>取出缓冲批次并取消定时器（线程安全）</summary>
+    private static List<IncomingMessage> TakeMergeBatch(MergeWindow window)
+    {
+        lock (window)
+        {
+            var batch = window.Buffer.ToList();
+            window.Buffer.Clear();
+            window.Timer?.Cancel();
+            return batch;
+        }
+    }
+
+    /// <summary>把合并批次作为一条整体消息触发回复</summary>
+    private async Task FlushMergeAsync(List<IncomingMessage> batch, CancellationToken ct)
+    {
+        if (batch.Count == 0) return;
+        var merged = MergeBatch(batch);
+        if (batch.Count > 1)
+        {
+            _logger.LogInformation("合并窗口到期：{Session} 合并 {N} 条消息为一个整体回复", merged.SessionKey, batch.Count);
+        }
+        await ProcessImmediatelyAsync(merged, ct);
+    }
+
+    /// <summary>把一批消息合并成一条（段按顺序拼接，文本按顺序连接，引用/发送者取第一条）</summary>
+    private static IncomingMessage MergeBatch(List<IncomingMessage> batch)
+    {
+        var first = batch[0];
+        if (batch.Count == 1) return first;
+        var segs = new JsonArray();
+        var texts = new List<string>();
+        var images = new List<string>();
+        foreach (var m in batch)
+        {
+            if (m.Segments is not null)
+            {
+                foreach (var s in m.Segments.OfType<JsonObject>())
+                {
+                    segs.Add(s.DeepClone());
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(m.PlainText)) texts.Add(m.PlainText);
+            if (m.ImageUrls is not null) images.AddRange(m.ImageUrls);
+        }
+        return first with
+        {
+            PlainText = string.Join("\n", texts),
+            Segments = segs,
+            ImageUrls = images.Count > 0 ? images : null,
+        };
     }
 
     /// <summary>消息实际处理逻辑（已处于全局门 + 会话锁保护内；长任务可让出锁）</summary>
@@ -233,7 +384,15 @@ public sealed class EventDispatcher
     private async Task HandleChatAsync(IncomingMessage msg, CancellationToken ct,
                                        Func<Task>? yieldLocks = null, Func<Task>? regainLocks = null)
     {
-        if (string.IsNullOrWhiteSpace(msg.PlainText)) return;
+        // 0. 聊天记录分享（合并转发）解析：当前消息或被引用消息里含 forward 段时，
+        //    递归展开为「此消息为聊天记录分享，内容：...」的一般消息格式文本；
+        //    纯转发消息（无文字）也能借此进入对话流程
+        string? forwardText = null;
+        if (HasForwardSegment(msg.Segments) || msg.QuoteId > 0)
+        {
+            forwardText = await BuildForwardTextAsync(msg, ct);
+        }
+        if (string.IsNullOrWhiteSpace(msg.PlainText) && forwardText is null) return;
 
         // 0. 显式"记住"指令（不经过 LLM；私聊挂人/群聊挂群；"记住XX/记一下XX/帮我记住XX" 开头）
         if (_memory.TryRememberExplicit(msg.IsPrivate ? msg.UserId : null, msg.IsPrivate ? null : msg.GroupId, msg.PlainText))
@@ -249,8 +408,11 @@ public sealed class EventDispatcher
             return;
         }
 
-        // 1. 追加用户消息（含发送者 QQ，群聊记录可区分说话人）
-        _context.AppendUser(msg.SessionKey, msg.PlainText, msg.UserId);
+        // 1. 追加用户消息（含发送者 QQ，群聊记录可区分说话人）；聊天记录分享解析结果并入消息主体
+        var contentForHistory = forwardText is null
+            ? msg.PlainText
+            : (string.IsNullOrWhiteSpace(msg.PlainText) ? forwardText : msg.PlainText + "\n\n" + forwardText);
+        _context.AppendUser(msg.SessionKey, contentForHistory, msg.UserId);
 
         // 2. 组装提示词消息：全局前置（自定义 role）+ system（身份×场景+记忆+格式指令）+ 全局后置（自定义 role）
         var prompt = _options.Prompt;
@@ -444,7 +606,17 @@ public sealed class EventDispatcher
             {
                 _logger.LogInformation("规划轮完成（{N} 字，session={Session}）", planText.Length, msg.SessionKey);
                 if (_options.Planning.Visible)
+                {
                     await ReplyAsync(msg, $"【规划】\n{planText}", ct);
+                }
+                else if (TryParseReplyRound(planText, out var transition, out _) && !string.IsNullOrWhiteSpace(transition))
+                {
+                    // LLM 未按规划提示词输出纯规划，而是直接写出了正式回复草稿（JSON）：
+                    // 把其中的 reply 作为「过渡句」先发出来（边说边干），工具调用与正式回复仍走正常流程
+                    _logger.LogInformation("规划轮输出了回复草稿，作为过渡句先发送（{Session}）", msg.SessionKey);
+                    try { await ReplyAsync(msg, transition, ct, atUser: false, replyTo: false); }
+                    catch (Exception ex) { _logger.LogWarning(ex, "发送规划过渡句失败"); }
+                }
             }
         }
 
@@ -483,12 +655,17 @@ public sealed class EventDispatcher
                     try
                     {
                         // 中间正文（边做边说）：LLM 可在发起工具调用的同时输出一句叙述（如"我查一下记录～"），
-                        // 保留进上下文并实时发给用户，营造"边说边干"的 agent 体验（独立消息，不引用、不 @）
+                        // 保留进上下文并实时发给用户，营造"边说边干"的 agent 体验（独立消息，不引用、不 @）；
+                        // JSON 格式回复体、伪工具声明（"[调用工具: xxx]"）等垃圾只保留上下文，不发送
                         if (!string.IsNullOrWhiteSpace(result.Content))
                         {
                             roundMsgs.Add(new ChatMessage("assistant", result.Content) { ReasoningContent = result.ReasoningContent });
-                            try { await ReplyAsync(msg, result.Content, ct, atUser: false, replyTo: false); }
-                            catch (Exception ex) { _logger.LogWarning(ex, "发送中间正文失败"); }
+                            if (!IsFormatJunk(result.Content)
+                                && !result.Content.TrimStart().StartsWith("[调用工具", StringComparison.Ordinal))
+                            {
+                                try { await ReplyAsync(msg, result.Content, ct, atUser: false, replyTo: false); }
+                                catch (Exception ex) { _logger.LogWarning(ex, "发送中间正文失败"); }
+                            }
                         }
                         // assistant 消息带 tool_calls 原样回传（含 reasoning_content，DeepSeek 要求完整回传否则 400）
                         roundMsgs.Add(new ChatMessage("assistant", null)
@@ -1027,6 +1204,130 @@ public sealed class EventDispatcher
             $"group:{evt.GroupId}", evt.UserId == _options.OwnerId,
             ExtractQuoteId(evt.Message), ExtractImageUrls(evt.Message));
         return true;
+    }
+
+    /// <summary>消息段数组里是否含 forward（聊天记录分享）段</summary>
+    private static bool HasForwardSegment(JsonArray? segments)
+    {
+        if (segments is null) return false;
+        return segments.OfType<JsonObject>().Any(s => s["type"]?.GetValue<string>() == "forward");
+    }
+
+    /// <summary>提取 forward 段的 id（兼容字符串/数字两种格式）</summary>
+    private static string? ExtractForwardId(JsonObject? data)
+    {
+        if (data?["id"] is not JsonValue idv) return null;
+        if (idv.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s)) return s;
+        if (idv.TryGetValue<long>(out var l)) return l.ToString();
+        return null;
+    }
+
+    /// <summary>
+    /// 解析当前消息与被引用消息中的合并转发（forward）段，展开为「此消息为聊天记录分享，内容：[...]」文本。
+    /// 无 forward 段返回 null。嵌套转发（记录里套记录）递归展开，深度上限防死循环。
+    /// </summary>
+    private async Task<string?> BuildForwardTextAsync(IncomingMessage msg, CancellationToken ct)
+    {
+        var sb = new System.Text.StringBuilder();
+        // 当前消息里的 forward 段
+        await AppendForwardTextAsync(sb, msg.Segments, ct, 0);
+        // 被引用消息里的 forward 段（引用分享的聊天记录）
+        if (msg.QuoteId > 0)
+        {
+            var quote = await _client.GetMessageByIdAsync(msg.QuoteId, ct);
+            if (quote is not null && quote.Value.Segments is not null)
+            {
+                await AppendForwardTextAsync(sb, quote.Value.Segments, ct, 0);
+            }
+        }
+        return sb.Length > 0 ? sb.ToString().TrimEnd() : null;
+    }
+
+    /// <summary>把段数组里的每个 forward 段展开追加到 sb（每条记录一行，一般消息格式）</summary>
+    private async Task AppendForwardTextAsync(System.Text.StringBuilder sb, JsonArray? segments,
+                                              CancellationToken ct, int depth)
+    {
+        if (segments is null || depth > 5) return;
+        foreach (var seg in segments.OfType<JsonObject>())
+        {
+            if (seg["type"]?.GetValue<string>() != "forward") continue;
+            var id = ExtractForwardId(seg["data"] as JsonObject);
+            if (id is null) continue;
+
+            var list = await _client.GetForwardMsgAsync(id, ct);
+            if (list is null)
+            {
+                sb.Append("（聊天记录分享获取失败）\n");
+                continue;
+            }
+            sb.Append("此消息为聊天记录分享，内容：\n");
+            foreach (var (nick, uid, inner) in list)
+            {
+                var who = string.IsNullOrWhiteSpace(nick) ? uid.ToString() : nick;
+                var text = await RenderSegmentsTextAsync(inner, ct, depth + 1);
+                sb.Append($"[{who}]：{text}\n");
+            }
+        }
+    }
+
+    /// <summary>把单条消息的段数组渲染为一般文本（text 原文、图片/表情/at 占位、forward 递归）</summary>
+    private async Task<string> RenderSegmentsTextAsync(JsonArray? segments, CancellationToken ct, int depth)
+    {
+        if (segments is null) return "";
+        if (depth > 5) return "…（层级过深）";
+        var sb = new System.Text.StringBuilder();
+        foreach (var seg in segments.OfType<JsonObject>())
+        {
+            var type = seg["type"]?.GetValue<string>();
+            var data = seg["data"] as JsonObject;
+            switch (type)
+            {
+                case "text":
+                    sb.Append(data?["text"]?.GetValue<string>());
+                    break;
+                case "image":
+                    sb.Append("[图片]");
+                    break;
+                case "face":
+                    sb.Append("[表情]");
+                    break;
+                case "at":
+                    var atQq = data?["qq"]?.ToString();
+                    sb.Append(atQq == "all" ? "@全体" : $"@{atQq}");
+                    break;
+                case "forward":
+                    // 嵌套聊天记录分享：递归展开（记录里套记录）
+                    var fwdId = ExtractForwardId(data);
+                    if (string.IsNullOrWhiteSpace(fwdId))
+                    {
+                        sb.Append("[聊天记录]");
+                    }
+                    else
+                    {
+                        var inner = await _client.GetForwardMsgAsync(fwdId, ct);
+                        if (inner is null)
+                        {
+                            sb.Append("[聊天记录]");
+                        }
+                        else
+                        {
+                            sb.Append("\n[嵌套聊天记录分享]\n");
+                            foreach (var (nick, uid, innerSegs) in inner)
+                            {
+                                var who = string.IsNullOrWhiteSpace(nick) ? uid.ToString() : nick;
+                                var t = await RenderSegmentsTextAsync(innerSegs, ct, depth + 1);
+                                sb.Append($"  [{who}]：{t}\n");
+                            }
+                        }
+                    }
+                    break;
+                default:
+                    // 其他段类型（json/record/video 等）给占位，避免丢失上下文
+                    if (!string.IsNullOrEmpty(type)) sb.Append($"[{type}]");
+                    break;
+            }
+        }
+        return sb.ToString().Trim();
     }
 
     /// <summary>提取消息中引用（reply）段指向的消息 id；无引用返回 0</summary>

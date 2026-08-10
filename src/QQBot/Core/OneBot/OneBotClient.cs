@@ -227,9 +227,10 @@ public sealed class OneBotClient
     }
 
     /// <summary>
-    /// 按消息 id 查询消息内容（get_msg）：返回被引用消息的文本/发送者/图片直链。失败返回 null。
+    /// 按消息 id 查询消息内容（get_msg）：返回被引用消息的文本/发送者/图片直链/完整消息段。
+    /// 失败返回 null。Segments 含 forward（聊天记录分享）段时可供上层递归解析。
     /// </summary>
-    public async Task<(string Text, string? Nickname, long UserId, List<string>? ImageUrls)?> GetMessageByIdAsync(long messageId, CancellationToken ct = default)
+    public async Task<(string Text, string? Nickname, long UserId, List<string>? ImageUrls, JsonArray? Segments)?> GetMessageByIdAsync(long messageId, CancellationToken ct = default)
     {
         try
         {
@@ -259,13 +260,53 @@ public sealed class OneBotClient
                 var sender = data["sender"] as JsonObject;
                 return (sb.ToString().Trim(), sender?["nickname"]?.GetValue<string>(),
                         data["user_id"]?.GetValue<long>() ?? 0,
-                        imageUrls.Count > 0 ? imageUrls : null);
+                        imageUrls.Count > 0 ? imageUrls : null,
+                        data["message"] as JsonArray);
             }
             finally { _sendLock.Release(); }
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "查询消息内容失败（id={Id}）", messageId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 获取合并转发（聊天记录分享）内容（get_forward_msg）。
+    /// 返回按顺序的 (发送者昵称, QQ, 消息段数组)；每条消息段里可能再含 forward 段（嵌套转发），由上层递归处理。
+    /// 失败返回 null。
+    /// </summary>
+    public async Task<List<(string? Nickname, long UserId, JsonArray? Segments)>?> GetForwardMsgAsync(string id, CancellationToken ct = default)
+    {
+        try
+        {
+            await _sendLock.WaitAsync(ct);
+            try
+            {
+                var resp = await SendJsonAsync(HttpMethod.Post, "get_forward_msg", new JsonObject { ["id"] = id }, ct);
+                resp.EnsureSuccessStatusCode();
+                var node = JsonNode.Parse(await resp.Content.ReadAsStringAsync(ct));
+                if (node?["retcode"]?.GetValue<int>() != 0) return null;
+                var msgs = node?["data"]?["messages"] as JsonArray;
+                if (msgs is null) return null;
+                var list = new List<(string?, long, JsonArray?)>();
+                foreach (var m in msgs.OfType<JsonObject>())
+                {
+                    var sender = m["sender"] as JsonObject;
+                    // sender.user_id 优先，回退顶层 user_id（不同协议端字段位置略有差异）
+                    var uid = sender?["user_id"]?.GetValue<long>()
+                              ?? m["user_id"]?.GetValue<long>()
+                              ?? 0;
+                    list.Add((sender?["nickname"]?.GetValue<string>(), uid, m["message"] as JsonArray));
+                }
+                return list;
+            }
+            finally { _sendLock.Release(); }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "获取合并转发内容失败（id={Id}）", id);
             return null;
         }
     }

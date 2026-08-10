@@ -9,7 +9,7 @@ public sealed class BotOptions
     /// <summary>主人 QQ 号：拥有最高权限（管理员指令、改配置等）。0 = 未设置。</summary>
     public long OwnerId { get; set; }
 
-    /// <summary>机器人自己的 QQ 号（在 appsettings.json 配置）</summary>
+    /// <summary>机器人自己的 QQ 号（静静 2049592241）</summary>
     public long SelfId { get; set; } = 0;
 
     /// <summary>NapCat 正向 WebSocket 地址（收事件）</summary>
@@ -261,6 +261,13 @@ public sealed class TriggerOptions
 
     /// <summary>屏蔽的用户黑名单</summary>
     public long[] BlockedUsers { get; set; } = [];
+
+    /// <summary>
+    /// 消息合并窗口（秒）：触发静静后等待该时长，把窗口内到达的连续消息（如 QQ「转发+留言」拆成的两条）
+    /// 合并成一个整体再回复；0 = 关闭合并（每条消息立即回复）。
+    /// 以私聊/群为单位独立计时；窗口内再次 @ 机器人则拆分为两次回复。
+    /// </summary>
+    public int MergeSeconds { get; set; } = 5;
 }
 
 /// <summary>并发控制配置（多线程聊天）</summary>
@@ -572,8 +579,8 @@ public sealed class AdminOptions
     /// <summary>监听端口（默认 7088）</summary>
     public int Port { get; set; } = 7088;
 
-    /// <summary>访问令牌（/api/* 需 Authorization: Bearer &lt;token&gt;;留空=仅本机无认证，建议在 appsettings.json 里设置）</summary>
-    public string Token { get; set; } = "";
+    /// <summary>访问令牌（/api/* 需 Authorization: Bearer &lt;token&gt;;留空=仅本机无认证，不建议）</summary>
+    public string Token { get; set; } = "jingjing-admin";
 
     /// <summary>日志目录（相对运行目录；按天落盘 logs/yyyy-MM-dd.log，保留 LogRetentionDays 天）</summary>
     public string LogsDir { get; set; } = "data/logs";

@@ -72,6 +72,7 @@ public sealed class AdminService : IHostedService
         [
             new CfgItem(["Trigger", "PrivateEnabled"], "私聊响应", "是否响应私聊消息", "bool"),
             new CfgItem(["Trigger", "GroupAtOnly"], "群聊仅 @ 响应", "群聊只有 @ 静静 时才响应", "bool"),
+            new CfgItem(["Trigger", "MergeSeconds"], "消息合并窗口(秒)", "转发+留言等连续消息合并成整体回复；0=关闭；窗口内再次@则拆分", "int"),
             new CfgItem(["Prompt", "PrivateExtra"], "私聊附加提示", "私聊场景追加的提示词", "text"),
             new CfgItem(["Prompt", "GroupExtra"], "群聊附加提示", "群聊场景追加的提示词", "text"),
         ]),

@@ -184,17 +184,14 @@ public sealed class GetChatHistoryTool : ITool
     public JsonObject ParametersSchema => new()
     {
         ["type"] = "object",
-        ["properties"] = new JsonObject
-        {
-            ["count"] = new JsonObject { ["type"] = "integer", ["description"] = "要获取的最近消息条数（1~上限，默认用上限值）" }
-        },
+        ["properties"] = new JsonObject(),   // 无参数：条数固定用配置上限（MaxContextMessages），不由 LLM 决定
         ["additionalProperties"] = false
     };
 
     public async Task<string> ExecuteAsync(string argsJson, ToolContext ctx, CancellationToken ct)
     {
-        var args = JsonNode.Parse(argsJson) as JsonObject;
-        var count = Math.Clamp(args?["count"]?.GetValue<int>() ?? _maxCount, 1, _maxCount);
+        // 条数以配置为准（MaxContextMessages），忽略 LLM 传入的条数参数——避免与面板设置不符
+        var count = _maxCount;
 
         // 群聊：优先从 QQ 拉完整群记录（含所有人消息），拉到的先入库（去重覆盖），失败回退本地库
         if (!ctx.Message.IsPrivate)
