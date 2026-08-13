@@ -16,6 +16,10 @@ public sealed class ChatContext
     private readonly int _maxMessages;
     private readonly object _lock = new();
 
+    /// <summary>会话最近一次规划文本（内存级）：规划轮输出，供下次对话延续互动方向（如"欲擒故纵"）；
+    /// 非持久化——重启后丢失，属可接受的短期张力</summary>
+    private readonly ConcurrentDictionary<string, string> _lastPlanning = new();
+
     public ChatContext(Database db, int maxMessages)
     {
         _db = db;
@@ -57,10 +61,22 @@ public sealed class ChatContext
         return messages;
     }
 
+    /// <summary>保存会话最近一次规划（空文本=清除）</summary>
+    public void SavePlanning(string sessionKey, string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) _lastPlanning.TryRemove(sessionKey, out _);
+        else _lastPlanning[sessionKey] = text;
+    }
+
+    /// <summary>取会话最近一次规划；无则 null</summary>
+    public string? GetLastPlanning(string sessionKey)
+        => _lastPlanning.TryGetValue(sessionKey, out var t) ? t : null;
+
     /// <summary>清空某会话（内存 + 数据库）</summary>
     public void Clear(string sessionKey)
     {
         _cache.TryRemove(sessionKey, out _);
+        _lastPlanning.TryRemove(sessionKey, out _);
         _db.DeleteSession(sessionKey);
     }
 

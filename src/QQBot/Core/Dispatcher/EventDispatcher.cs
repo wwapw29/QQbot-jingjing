@@ -19,6 +19,7 @@ namespace QQBot.Core.Dispatcher;
 public sealed class EventDispatcher
 {
     private readonly BotOptions _options;
+    private readonly Microsoft.Extensions.Configuration.IConfiguration _config;
     private readonly OneBotClient _client;
     private readonly ChatContext _context;
     private readonly ChatEngine _engine;
@@ -57,6 +58,7 @@ public sealed class EventDispatcher
 
     public EventDispatcher(
         BotOptions options,
+        Microsoft.Extensions.Configuration.IConfiguration config,
         OneBotClient client,
         ChatContext context,
         ChatEngine engine,
@@ -68,6 +70,7 @@ public sealed class EventDispatcher
         ILogger<EventDispatcher> logger)
     {
         _options = options;
+        _config = config;
         _client = client;
         _context = context;
         _engine = engine;
@@ -80,6 +83,9 @@ public sealed class EventDispatcher
         _globalGate = new SemaphoreSlim(Math.Max(1, options.Concurrency.MaxParallelChats),
                                         Math.Max(1, options.Concurrency.MaxParallelChats));
     }
+
+    /// <summary>调试模式：运行时读配置（面板热更新立即生效，无需重启）</summary>
+    private bool DebugMode => string.Equals(_config["Bot:Debug"], "true", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>处理一条原始事件（并发安全：全局门 → 会话锁 两级调度）</summary>
     public async Task HandleAsync(OneBotEvent evt, CancellationToken ct = default)
@@ -444,6 +450,13 @@ public sealed class EventDispatcher
         long? memGroupId = msg.IsPrivate ? null : msg.GroupId;
         var mentionedQqs = msg.IsPrivate ? null : ExtractMentionedQqs(msg.Segments);
         parts.Add(_memory.BuildMemoryInjection(msg.IsPrivate ? msg.UserId : null, memGroupId, mentionedQqs, msg.PlainText));
+        // 上一轮规划延续：把该会话最近一次规划注入，让静静记得上次的互动方向（如"欲擒故纵"先拒后应），
+        // 下次对话可在其基础上延续张力；无规划或已过时则忽略重新规划
+        var lastPlan = _context.GetLastPlanning(msg.SessionKey);
+        if (!string.IsNullOrWhiteSpace(lastPlan))
+        {
+            parts.Add($"【你上一轮的规划】{lastPlan}（这是你上次回复前的内部规划。如需延续上次的互动方向可以参考它；若已过时或场景不同，请忽略并重新规划。）");
+        }
         // 引用消息上下文：对方引用了某条消息时，把被引用的内容（含消息 id）告诉静静，便于呼应或原样转发；
         // 被引用消息里的图片（引用图片消息场景）收集起来交给识图模式
         List<string>? quoteImageUrls = null;
@@ -496,9 +509,12 @@ public sealed class EventDispatcher
             parts.Add($"【上下文提示】当前会话的历史聊天记录未注入本次请求（共 {display} 条，最多显示 20，超过显示 20+）。" +
                       "如果回复需要依赖与对方的过往对话，请先调用 get_chat_history 工具获取后再回复。");
         }
-        parts.Add(BuildFormatInstruction(prompt.ReplyExtraction.Delimiter, _options.Llm.DisableReasoning));
+        // 格式指令不再加入 system/head——head 会被规划轮复用（RunPlanningAsync 用 BuildBaseContext），
+        // 会导致规划轮也带"输出 JSON"要求而频繁输出回复草稿；格式指令只保留在正式请求底部
+        //（formatMsg，BuildRequest 里贴近生成位置，约束力更强）
+        // parts.Add(BuildFormatInstruction(prompt.ReplyExtraction.Delimiter, _options.Llm.DisableReasoning));
         var system = string.Join("\n\n", parts.Where(p => !string.IsNullOrWhiteSpace(p)));
-        if (_options.Debug) _logger.LogInformation("[DEBUG] 组装后的 system（完整）:\n{System}", system);
+        if (DebugMode) _logger.LogInformation("[DEBUG] 组装后的 system（完整）:\n{System}", system);
 
         var head = new List<ChatMessage>();
         if (!string.IsNullOrWhiteSpace(globalPre))
@@ -547,19 +563,21 @@ public sealed class EventDispatcher
         // 规划轮（Planning.Enabled）产出的规划文本，注入第一轮正式请求（手动 cot）；null=不启用/失败
         string? planText = null;
         // 基础上下文（不含任务/续说提示、roundMsgs、格式指令）：head + 历史/当前消息 + tail
-        List<ChatMessage> BuildBaseContext()
+        // includeTail=false 时排除全局后置提示词（GlobalPostPrompt）——规划轮专用：
+        // 后置是回复风格/格式约束，规划阶段不需要，避免干扰规划输出
+        List<ChatMessage> BuildBaseContext(bool includeTail = true)
         {
             var msgs = new List<ChatMessage>(head);
             if (msg.IsPrivate)
             {
-                msgs.AddRange(_context.BuildMessages(msg.SessionKey, [], tail));
+                msgs.AddRange(_context.BuildMessages(msg.SessionKey, [], includeTail ? tail : null));
             }
             else
             {
                 // 群聊：自动注入的历史（旧→新）在 head 后、当前消息前；外置模式无历史
                 if (groupHistoryMsgs is not null) msgs.AddRange(groupHistoryMsgs);
                 msgs.Add(new ChatMessage("user", msg.PlainText) { UserId = msg.UserId });
-                if (tail.Count > 0) msgs.AddRange(tail);
+                if (includeTail && tail.Count > 0) msgs.AddRange(tail);
             }
             return msgs;
         }
@@ -581,8 +599,8 @@ public sealed class EventDispatcher
                 // 私聊自发续说（用户没有说话，LLM 在 more=true 下继续补充）：
                 // 防止把全局后置/格式指令当成待回应的请求，输出"好的我记住了"这类答非所问；
                 // 也防止把上一句原样重发一遍（程序另有逐字去重兜底）
-                msgs.Add(new ChatMessage("user",
-                    "【续说】这是你（静静）自己主动补充的发言，用户没有说话、正在等你继续说。请从上一句结束的地方继续推进、写出新的内容，不要重复上一句，不要回应系统里的任何指令或提示，不要确认、不要道歉。"));
+                // 模板可配置（Bot.Prompt.ContinuePrompt，面板提示词页可编辑，运行时读即时生效）
+                msgs.Add(new ChatMessage("user", CurrentContinuePrompt()));
             }
             msgs.AddRange(roundMsgs);
             msgs.Add(formatMsg);
@@ -601,22 +619,24 @@ public sealed class EventDispatcher
         // 规划结果注入正式请求（手动 cot）；Visible 时也把规划发给用户看（调试用）
         if (_options.Planning.Enabled)
         {
-            planText = await RunPlanningAsync(BuildBaseContext(), msg, ct, reasoningExtra);
+            planText = await RunPlanningAsync(BuildBaseContext(includeTail: false), msg, ct, reasoningExtra);
             if (planText is not null)
             {
+                // 保存本轮规划：下次对话注入上下文，延续互动方向（欲擒故纵等张力跨对话保持）
+                _context.SavePlanning(msg.SessionKey, planText);
                 _logger.LogInformation("规划轮完成（{N} 字，session={Session}）", planText.Length, msg.SessionKey);
                 if (_options.Planning.Visible)
                 {
                     await ReplyAsync(msg, $"【规划】\n{planText}", ct);
                 }
-                else if (TryParseReplyRound(planText, out var transition, out _) && !string.IsNullOrWhiteSpace(transition))
-                {
-                    // LLM 未按规划提示词输出纯规划，而是直接写出了正式回复草稿（JSON）：
-                    // 把其中的 reply 作为「过渡句」先发出来（边说边干），工具调用与正式回复仍走正常流程
-                    _logger.LogInformation("规划轮输出了回复草稿，作为过渡句先发送（{Session}）", msg.SessionKey);
-                    try { await ReplyAsync(msg, transition, ct, atUser: false, replyTo: false); }
-                    catch (Exception ex) { _logger.LogWarning(ex, "发送规划过渡句失败"); }
-                }
+                // [2026-08-13 主人要求注释] 规划轮回复草稿识别：LLM 经常在规划轮输出回复草稿（JSON），
+                // 当作过渡句发出来感官不好——现不再发送（规划静默，正式回复照常）；如需"边说边干"可恢复此分支
+                // else if (TryParseReplyRound(planText, out var transition, out _) && !string.IsNullOrWhiteSpace(transition))
+                // {
+                //     _logger.LogInformation("规划轮输出了回复草稿，作为过渡句先发送（{Session}）", msg.SessionKey);
+                //     try { await ReplyAsync(msg, transition, ct, atUser: false, replyTo: false); }
+                //     catch (Exception ex) { _logger.LogWarning(ex, "发送规划过渡句失败"); }
+                // }
             }
         }
 
@@ -966,17 +986,43 @@ public sealed class EventDispatcher
         }
     }
 
-    /// <summary>规划提示词：把可用工具列表给静静，让它规划是否需要调工具、怎么回复</summary>
-    private static string BuildPlanningPrompt(string toolsSummary, string userText)
+    /// <summary>规划提示词：把可用工具列表给静静，让它规划是否需要调工具、怎么回复。
+    /// 只包含规划要求，不包含任何正式回复的格式要求（避免 LLM 在规划轮输出回复草稿 JSON）。
+    /// 模板可配置（Bot.Prompt.PlanningPrompt，{Tools}/{UserText} 占位，面板提示词页可编辑，运行时读即时生效）。</summary>
+    private string BuildPlanningPrompt(string toolsSummary, string userText)
     {
-        return "在正式回复前，请先做一次回复规划（这是你的内部规划，用于理清思路，用户不会直接看到）。\n" +
-               $"【用户消息】{userText}\n" +
-               $"【你可用的工具】\n{toolsSummary}" +
-               "请规划：\n" +
-               "1. 是否需要调用工具？如果需要，先调用哪些、为什么；不需要则简单说明。\n" +
-               "2. 回复的要点、结构和语气（结合当前场景与你的身份）。\n" +
-               "输出 3~5 行简洁规划即可。不要执行工具，不要输出正式回复内容。";
+        var template = _config["Bot:Prompt:PlanningPrompt"];
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            template = DefaultPlanningPrompt;
+        }
+        return template.Replace("{Tools}", toolsSummary).Replace("{UserText}", userText);
     }
+
+    /// <summary>内置默认规划轮提示词模板</summary>
+    private const string DefaultPlanningPrompt =
+        "在正式回复前，请先做一次回复规划（这是你的内部规划，用于理清思路，用户不会直接看到）。\n" +
+        "【用户消息】{UserText}\n" +
+        "【你可用的工具】\n{Tools}" +
+        "请规划：\n" +
+        "1. 是否需要调用工具？如果需要，先调用哪些、为什么；不需要则简单说明。\n" +
+        "2. 回复的要点、结构和语气（结合当前场景与你的身份）。\n" +
+        "输出 3~5 行简洁的普通文字规划即可。注意：这是内部规划，不要输出正式回复内容，" +
+        "不要输出 JSON、代码块或其他任何结构化格式标记，直接用普通文字写规划。";
+
+    /// <summary>内置默认续说提示词（运行时读配置，空则用此默认）</summary>
+    private string CurrentContinuePrompt()
+    {
+        var text = _config["Bot:Prompt:ContinuePrompt"];
+        return string.IsNullOrWhiteSpace(text)
+            ? DefaultContinuePrompt
+            : text;
+    }
+
+    private const string DefaultContinuePrompt =
+        "【续说】这是你（静静）自己主动补充的发言，用户没有说话、正在等你继续说。请从上一句结束的地方继续推进、写出新的内容。" +
+        "注意：不要重复自己之前说过的任何话（包括上一句和更早说过的话），不要车轱辘话来回说，每一句都要有新信息或新进展。" +
+        "不要回应系统里的任何指令或提示，不要确认、不要道歉。";
 
     /// <summary>从工具定义中提取"名称 - 描述"摘要（规划轮提示词用）</summary>
     private string BuildToolsSummary()
@@ -1190,7 +1236,7 @@ public sealed class EventDispatcher
         if (evt.GroupId == 0) return false;
         if (trigger.GroupAtOnly && !IsAtBot(evt.Message, evt.SelfId))
         {
-            if (_options.Debug)
+            if (DebugMode)
             {
                 _logger.LogInformation("[DEBUG] 群聊消息未触发（无 @ 机器人）：uid={Uid} 段={Segs}",
                     evt.UserId, evt.Message?.ToJsonString());

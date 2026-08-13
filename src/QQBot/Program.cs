@@ -83,7 +83,8 @@ builder.Services.AddSingleton<IEnumerable<ITool>>(sp =>
 builder.Services.AddSingleton<ChatEngine>(sp => new ChatEngine(
     sp.GetRequiredService<LlmOptions>(),
     sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ChatEngine>>(),
-    sp.GetRequiredService<BotOptions>().Debug));
+    sp.GetRequiredService<BotOptions>(),
+    sp.GetRequiredService<Microsoft.Extensions.Configuration.IConfiguration>()));
 builder.Services.AddSingleton(sp =>
     new ChatContext(sp.GetRequiredService<Database>(),
                     sp.GetRequiredService<BotOptions>().Prompt.MaxContextMessages));

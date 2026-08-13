@@ -13,15 +13,18 @@ namespace QQBot.Core.Chat;
 public sealed class ChatEngine
 {
     private readonly LlmOptions _llm;
+    private readonly BotOptions _options;
+    private readonly Microsoft.Extensions.Configuration.IConfiguration _config;
     private readonly ILogger<ChatEngine> _logger;
     private readonly HttpClient _http;
-    private readonly bool _debug;
 
-    public ChatEngine(LlmOptions llm, ILogger<ChatEngine> logger, bool debug = false)
+    public ChatEngine(LlmOptions llm, ILogger<ChatEngine> logger, BotOptions options,
+                      Microsoft.Extensions.Configuration.IConfiguration config)
     {
         _llm = llm;
         _logger = logger;
-        _debug = debug;
+        _options = options;
+        _config = config;
 
         if (string.IsNullOrWhiteSpace(ResolveApiKey()))
         {
@@ -33,6 +36,9 @@ public sealed class ChatEngine
         // 的整个路径（如 /api/v3 会丢失），DeepSeek 无路径碰巧没事，豆包这类带路径的会 404。
         _http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };  // 兜底大超时；实际每次请求用更细的超时控制
     }
+
+    /// <summary>调试模式开关：运行时读配置（面板热更新立即生效，无需重启）</summary>
+    private bool Debug => string.Equals(_config["Bot:Debug"], "true", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>动态解析 API Key（优先配置，回退环境变量；热更新后立即生效）</summary>
     private string ResolveApiKey() =>
@@ -95,11 +101,11 @@ public sealed class ChatEngine
                 cts.CancelAfter(TimeSpan.FromSeconds(_llm.TimeoutSeconds));
 
                 using var content = new StringContent(json, Encoding.UTF8, "application/json");
-                if (_debug) _logger.LogInformation("[DEBUG] LLM 请求（完整 Prompt）:\n{Json}", FormatJson(json));
+                if (Debug) _logger.LogInformation("[DEBUG] LLM 请求（完整 Prompt）:\n{Json}", FormatJson(json));
                 using var req = BuildRequest(HttpMethod.Post, ResolveEndpoint(), content);
                 var resp = await _http.SendAsync(req, cts.Token);
                 var bodyText = await resp.Content.ReadAsStringAsync(cts.Token);
-                if (_debug) _logger.LogInformation("[DEBUG] LLM 响应:\n{Json}", Truncate(bodyText, 8000));
+                if (Debug) _logger.LogInformation("[DEBUG] LLM 响应:\n{Json}", Truncate(bodyText, 8000));
 
                 if (resp.IsSuccessStatusCode)
                 {
@@ -185,11 +191,11 @@ public sealed class ChatEngine
                 cts.CancelAfter(TimeSpan.FromSeconds(_llm.TimeoutSeconds));
 
                 using var content = new StringContent(json, Encoding.UTF8, "application/json");
-                if (_debug) _logger.LogInformation("[DEBUG] LLM 请求（完整 Prompt）:\n{Json}", FormatJson(json));
+                if (Debug) _logger.LogInformation("[DEBUG] LLM 请求（完整 Prompt）:\n{Json}", FormatJson(json));
                 using var req = BuildRequest(HttpMethod.Post, ResolveEndpoint(), content);
                 var resp = await _http.SendAsync(req, cts.Token);
                 var body = await resp.Content.ReadAsStringAsync(cts.Token);
-                if (_debug) _logger.LogInformation("[DEBUG] LLM 响应:\n{Json}", Truncate(body, 8000));
+                if (Debug) _logger.LogInformation("[DEBUG] LLM 响应:\n{Json}", Truncate(body, 8000));
 
                 if (resp.IsSuccessStatusCode)
                 {

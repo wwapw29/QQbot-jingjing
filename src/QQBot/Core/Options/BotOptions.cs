@@ -452,6 +452,12 @@ public sealed class PromptOptions
     /// <summary>AI 回复截取配置（cot 处理）</summary>
     public ReplyExtractionOptions ReplyExtraction { get; set; } = new();
 
+    /// <summary>续说提示词模板（more=true 自发补充时的系统提示；留空=代码内置默认）</summary>
+    public string? ContinuePrompt { get; set; }
+
+    /// <summary>规划轮提示词模板（正式回复前的内部规划指令；{Tools}=工具摘要 {UserText}=用户消息；留空=代码内置默认）</summary>
+    public string? PlanningPrompt { get; set; }
+
     /// <summary>
     /// 按 身份×场景 解析最终提示词与场景补充：
     /// 场景 Profile 覆盖了某字段就用场景值，否则回退身份默认；Extra 回退到 PrivateExtra/GroupExtra。

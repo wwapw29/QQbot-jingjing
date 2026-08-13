@@ -164,6 +164,8 @@ public sealed class AdminService : IHostedService
         (["Prompt", "ReplyExtraction", "Strategy"], "回复提取策略", "reasoningContent / delimiter / regex", "string"),
         (["Prompt", "ReplyExtraction", "Delimiter"], "提取分隔符", "Strategy=delimiter 时用", "string"),
         (["Prompt", "ReplyExtraction", "Regex"], "提取正则", "Strategy=regex 时用", "string"),
+        (["Prompt", "ContinuePrompt"], "续说提示词", "more=true 自发补充时的系统提示（留空=内置默认；改后即时生效）", "text"),
+        (["Prompt", "PlanningPrompt"], "规划轮提示词", "正式回复前的内部规划指令模板；{Tools}=工具摘要 {UserText}=用户消息（留空=内置默认；改后即时生效）", "text"),
     ];
 
     public Task StartAsync(CancellationToken cancellationToken)
