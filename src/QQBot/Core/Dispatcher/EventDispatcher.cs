@@ -39,6 +39,12 @@ public sealed class EventDispatcher
     /// <summary>消息合并窗口（按会话）：QQ「转发+留言」等连续消息合并成整体回复；0 秒=关闭</summary>
     private readonly ConcurrentDictionary<string, MergeWindow> _mergeWindows = new();
 
+    /// <summary>
+    /// 会话忙时的排队消息（按会话）：LLM 回复生成期间到达的触发消息并入队列，
+    /// 当前回复完成后合并成一条统一处理——回复延迟结束前多次触发只回一条。
+    /// </summary>
+    private readonly ConcurrentDictionary<string, List<IncomingMessage>> _pendingAfterBusy = new();
+
     /// <summary>单个会话的合并缓冲（Buffer 需在 lock 内访问；Timer 到期触发 flush）</summary>
     private sealed class MergeWindow
     {
@@ -143,7 +149,20 @@ public sealed class EventDispatcher
         finally
         {
             _globalGate.Release();
+            FlushPendingIfIdle(msg.SessionKey, ct);
         }
+    }
+
+    /// <summary>会话空闲后：把回复期间排队（忙时合并）的触发消息作为一条整体回复处理</summary>
+    private void FlushPendingIfIdle(string sessionKey, CancellationToken ct)
+    {
+        if (!_pendingAfterBusy.TryRemove(sessionKey, out var pending) || pending.Count == 0) return;
+        _logger.LogInformation("会话空闲：合并处理回复期间排队的 {N} 条消息（{Session}）", pending.Count, sessionKey);
+        _ = Task.Run(async () =>
+        {
+            try { await FlushMergeAsync(pending, ct); }
+            catch (Exception ex) { _logger.LogWarning(ex, "排队批次处理失败（{Session}）", sessionKey); }
+        }, ct);
     }
 
     /// <summary>
@@ -155,6 +174,16 @@ public sealed class EventDispatcher
     {
         // 主人命令（! 前缀）不合并，立即处理
         if (msg.PlainText.TrimStart().StartsWith(_options.Command.Prefix)) return false;
+
+        // 会话忙（当前正在生成回复）：后续触发消息（含 @、触发词）并入排队队列，不再单独触发——
+        // 回复完成后合并成一条处理，保证"回复延迟结束前多次触发=一条回复"
+        if (_sessionLocks.TryGetValue(msg.SessionKey, out var busyLock) && busyLock.CurrentCount == 0)
+        {
+            var pending = _pendingAfterBusy.GetOrAdd(msg.SessionKey, _ => new List<IncomingMessage>());
+            lock (pending) pending.Add(msg);
+            _logger.LogDebug("会话忙，触发消息排队（{Session}）：{Text}", msg.SessionKey, msg.PlainText[..Math.Min(msg.PlainText.Length, 30)]);
+            return true;
+        }
 
         var window = _mergeWindows.GetOrAdd(msg.SessionKey, _ => new MergeWindow());
         bool split = false;
@@ -215,11 +244,22 @@ public sealed class EventDispatcher
         }
         _ = Task.Run(async () =>
         {
-            try { await Task.Delay(seconds * 1000, timer.Token); }
-            catch (TaskCanceledException) { return; }
-            var batch = TakeMergeBatch(window);
-            if (batch.Count > 0) await FlushMergeAsync(batch, ct);
-            else _logger.LogDebug("合并窗口到期但无消息（{Session}）", sessionKey);
+            try
+            {
+                await Task.Delay(seconds * 1000, timer.Token);
+                var batch = TakeMergeBatch(window);
+                if (batch.Count > 0) await FlushMergeAsync(batch, ct);
+                else _logger.LogDebug("合并窗口到期但无消息（{Session}）", sessionKey);
+            }
+            catch (OperationCanceledException)
+            {
+                // 定时器被取消（新窗口/退出）：正常退出
+            }
+            catch (Exception ex)
+            {
+                // 防止未观察异常被静默吞掉（曾导致"工具调用后没下文"且无任何日志）
+                _logger.LogError(ex, "合并窗口处理异常（{Session}）", sessionKey);
+            }
         });
     }
 
@@ -370,8 +410,9 @@ public sealed class EventDispatcher
         return "你刚才的输出格式不符合要求。以下是你刚才输出的正文（内容本身没问题，只是格式不对）：\n\n" +
                excerpt + "\n\n" +
                "请不要重新思考、不要改变想说的内容——只需把这段话重新整理成正确格式：" +
-               "思考结束后先输出标记 ```END_REASONING```，标记之后只输出一个 JSON 对象 " +
-               "{\"reply\":\"你要说的话\",\"more\":true或false}，不要输出任何多余文字、markdown 代码块或解释。请重新输出。";
+               "思考结束后先输出标记 ```END_REASONING```，标记之后只输出一个 JSON 数组，" +
+               "数组的每一项代表一条要发送的消息：[{\"reply\":\"第一句\"},{\"reply\":\"第二句\"}]，" +
+               "需要调用工具时在对应项加 tool_calls 字段。不要输出任何多余文字、markdown 代码块或解释。请重新输出。";
     }
 
     /// <summary>
@@ -400,8 +441,20 @@ public sealed class EventDispatcher
         }
         if (string.IsNullOrWhiteSpace(msg.PlainText) && forwardText is null) return;
 
-        // 0. 显式"记住"指令（不经过 LLM；私聊挂人/群聊挂群；"记住XX/记一下XX/帮我记住XX" 开头）
-        if (_memory.TryRememberExplicit(msg.IsPrivate ? msg.UserId : null, msg.IsPrivate ? null : msg.GroupId, msg.PlainText))
+        // 0. 消息级持久去重（修复：NapCat 重连重放的消息超过 30s 去重窗口后会被重复处理/重复回复/重复写记忆/重复落库）：
+        // 落库即占用 msg_key（INSERT OR IGNORE）——已存在（重放）则跳过整个处理流程。必须放在一切副作用（记住/记忆/回复）之前
+        var contentForHistory = forwardText is null
+            ? msg.PlainText
+            : (string.IsNullOrWhiteSpace(msg.PlainText) ? forwardText : msg.PlainText + "\n\n" + forwardText);
+        var msgKey = (msg.IsPrivate ? $"private:{msg.UserId}" : $"group:{msg.GroupId}") + $":{msg.MessageId}";
+        if (!_context.InsertUserIfAbsent(msg.SessionKey, msgKey, contentForHistory, msg.UserId))
+        {
+            _logger.LogInformation("消息已处理过（msgKey={MsgKey}），跳过重放（session={Session}）", msgKey, msg.SessionKey);
+            return;
+        }
+
+        // 0. 显式"记住"指令（不经过 LLM；私聊挂人/群聊挂"群+说话人"；"记住XX/记一下XX/帮我记住XX" 开头）
+        if (_memory.TryRememberExplicit(msg.UserId, msg.IsPrivate ? null : msg.GroupId, msg.PlainText))
         {
             await ReplyAsync(msg, "记住了～我记在心里啦。", ct);
             return;
@@ -414,12 +467,7 @@ public sealed class EventDispatcher
             return;
         }
 
-        // 1. 追加用户消息（含发送者 QQ，群聊记录可区分说话人）；聊天记录分享解析结果并入消息主体
-        var contentForHistory = forwardText is null
-            ? msg.PlainText
-            : (string.IsNullOrWhiteSpace(msg.PlainText) ? forwardText : msg.PlainText + "\n\n" + forwardText);
-        _context.AppendUser(msg.SessionKey, contentForHistory, msg.UserId);
-
+        // 1. 用户消息已由去重插入落库（上一步 msgKey 占用即写入）；后续上下文加载直接读库即可
         // 2. 组装提示词消息：全局前置（自定义 role）+ system（身份×场景+记忆+格式指令）+ 全局后置（自定义 role）
         var prompt = _options.Prompt;
         // 按 身份×场景 解析：场景 Profile（主人私聊/客人私聊/群聊主人/群聊他人）覆盖优先，未配置字段回退身份默认
@@ -446,10 +494,10 @@ public sealed class EventDispatcher
             ? "对方是你的主人，应称呼为「主人」。"
             : $"对方是客人，称呼时应使用其真实昵称，如「{userName}大人」。";
         parts.Add($"当前与你对话的人：昵称「{userName}」（QQ {msg.UserId}），是{userDesc}。{addressLine}");
-        // 记忆注入（两步定位：私聊=对方QQ/群聊=群号+说话人+提及的QQ）
+        // 记忆注入（两步定位：私聊=对方QQ/群聊=群号+说话人+提及的QQ；群聊也带说话人 uid → 支持"群+用户"记忆粒度）
         long? memGroupId = msg.IsPrivate ? null : msg.GroupId;
         var mentionedQqs = msg.IsPrivate ? null : ExtractMentionedQqs(msg.Segments);
-        parts.Add(_memory.BuildMemoryInjection(msg.IsPrivate ? msg.UserId : null, memGroupId, mentionedQqs, msg.PlainText));
+        parts.Add(_memory.BuildMemoryInjection(msg.UserId, memGroupId, mentionedQqs, msg.PlainText));
         // 上一轮规划延续：把该会话最近一次规划注入，让静静记得上次的互动方向（如"欲擒故纵"先拒后应），
         // 下次对话可在其基础上延续张力；无规划或已过时则忽略重新规划
         var lastPlan = _context.GetLastPlanning(msg.SessionKey);
@@ -479,6 +527,11 @@ public sealed class EventDispatcher
         // 识图模式（双模型架构）：消息带图（当前消息 + 被引用的图片消息）时，
         // 用专用识图模型看图 → 文本描述注入 system，主模型不需要支持视觉、不需要调工具
         List<string>? visionDescriptions = null;
+        // 主模型嵌入式识图（UseMainModel=true）：图片直接嵌入对话请求，不转描述——
+        // 主模型为 DeepSeek 时优先走 Files API（上传获取 file_id，24h 复用，不占请求体）；失败回退 base64 内联
+        List<string>? embeddedImages = null;
+        List<string>? embeddedFileIds = null;
+        var visionUseMain = string.Equals(_config["Bot:Vision:UseMainModel"], "true", StringComparison.OrdinalIgnoreCase);
         if (_options.Vision.Enabled)
         {
             var allUrls = new List<string>();
@@ -486,11 +539,31 @@ public sealed class EventDispatcher
             if (quoteImageUrls is not null) allUrls.AddRange(quoteImageUrls);
             if (allUrls.Count > 0)
             {
-                // 带上本次消息文字：让识图模型知道用户关注什么（如"这件衣服什么颜色"）
-                visionDescriptions = await _vision.DescribeImagesAsync(allUrls, msg.PlainText, ct);
-                if (visionDescriptions is not null && visionDescriptions.Count > 0)
+                if (visionUseMain)
                 {
-                    _logger.LogInformation("识图模式：识别 {N} 张图片完成（session={Session}）", visionDescriptions.Count, msg.SessionKey);
+                    // DeepSeek：先尝试 Files API 上传（file_id 引用），上传失败的图回退 base64 内联
+                    var inlineUrls = new List<string>();
+                    if (_vision.IsDeepSeekMainModel())
+                    {
+                        var (fids, failedUrls) = await _vision.UploadImagesToFilesAsync(allUrls, ct);
+                        if (fids.Count > 0) embeddedFileIds = fids;
+                        inlineUrls.AddRange(failedUrls);
+                    }
+                    else
+                    {
+                        inlineUrls.AddRange(allUrls);
+                    }
+                    if (inlineUrls.Count > 0)
+                        embeddedImages = await _vision.DownloadImagesDataUrlAsync(inlineUrls, ct);
+                }
+                else
+                {
+                    // 带上本次消息文字：让识图模型知道用户关注什么（如"这件衣服什么颜色"）
+                    visionDescriptions = await _vision.DescribeImagesAsync(allUrls, msg.PlainText, ct);
+                    if (visionDescriptions is not null && visionDescriptions.Count > 0)
+                    {
+                        _logger.LogInformation("识图模式：识别 {N} 张图片完成（session={Session}）", visionDescriptions.Count, msg.SessionKey);
+                    }
                 }
             }
         }
@@ -529,7 +602,8 @@ public sealed class EventDispatcher
         // 3. Agent 循环：静静自发地多次请求 LLM；每轮中 LLM 可自主调用工具（工具结果回填后继续）
         var toolCtx = new ToolContext(msg);
         // 自动注入模式（开关开）：群历史随请求注入，不再需要按需拉取 → 移除 get_chat_history 工具；外置模式保留
-        var tools = _tools.BuildToolDefinitions();
+        // 客人（非主人）对话：仅提供 GuestAllowed 白名单内的工具（主人始终全量）
+        var tools = _tools.BuildToolDefinitions(forGuest: !msg.IsOwner);
         if (_options.Prompt.AutoInjectGroupHistory)
         {
             // 注意：必须 DeepClone——JsonNode 不能有两个父节点，直接复用原数组元素构造新 JsonArray 会抛
@@ -543,8 +617,7 @@ public sealed class EventDispatcher
             tools = kept;
         }
         var repliesSent = 0;
-        var roundsUsed = 0;   // 已计入回复上限的发言轮数（shell 工具轮不计数）
-        string? lastReplyText = null;   // 上一轮回复内容（防连发重复）
+        var sentTexts = new HashSet<string>();   // 本次触发已发送的所有文本（防跨轮重复刷屏：只拦逐字相同的）
         // 群聊自动注入：被 @ 时先拉取群聊天记录（≤MaxContextMessages 条）入库，再随请求注入（旧→新）
         List<ChatMessage>? groupHistoryMsgs = null;
         if (!msg.IsPrivate && _options.Prompt.AutoInjectGroupHistory)
@@ -557,7 +630,7 @@ public sealed class EventDispatcher
         // 只带 head + 当前消息 + tail，模型需要过往对话时自己调用 get_chat_history 工具获取
         // 格式指令单独作为底部消息（贴近生成位置、约束力最强），不混在 system 里
         var formatMsg = new ChatMessage("user",
-            BuildFormatInstruction(prompt.ReplyExtraction.Delimiter, _options.Llm.DisableReasoning));
+            BuildFormatInstruction(prompt.ReplyExtraction.Delimiter, _options.Llm.DisableReasoning, _options.Reply.MaxRepliesPerTurn));
         // 本轮内产生的消息（工具回填/纠正/回复），每次请求拼在基础上下文之后、格式指令之前
         var roundMsgs = new List<ChatMessage>();
         // 规划轮（Planning.Enabled）产出的规划文本，注入第一轮正式请求（手动 cot）；null=不启用/失败
@@ -579,6 +652,10 @@ public sealed class EventDispatcher
                 msgs.Add(new ChatMessage("user", msg.PlainText) { UserId = msg.UserId });
                 if (includeTail && tail.Count > 0) msgs.AddRange(tail);
             }
+            // 主模型嵌入式识图：图片作为独立 user 消息（仅图块）嵌入——多模态内容只能出现在 user 消息；
+            // DeepSeek Files API 的 file_id 块优先，其余 base64 image_url 块
+            if ((embeddedImages is { Count: > 0 } || embeddedFileIds is { Count: > 0 }))
+                msgs.Add(new ChatMessage("user", null) { ImageDataUrls = embeddedImages, FileIds = embeddedFileIds });
             return msgs;
         }
         List<ChatMessage> BuildRequest()
@@ -593,14 +670,6 @@ public sealed class EventDispatcher
             {
                 // 任务目标注入：已有工具/回复轮次时，持续携带原始请求，防止长任务丢方向
                 msgs.Add(new ChatMessage("user", $"【当前任务】你正在处理这条请求，请始终围绕它展开，不要跑题：「{msg.PlainText}」"));
-            }
-            else if (repliesSent > 0)
-            {
-                // 私聊自发续说（用户没有说话，LLM 在 more=true 下继续补充）：
-                // 防止把全局后置/格式指令当成待回应的请求，输出"好的我记住了"这类答非所问；
-                // 也防止把上一句原样重发一遍（程序另有逐字去重兜底）
-                // 模板可配置（Bot.Prompt.ContinuePrompt，面板提示词页可编辑，运行时读即时生效）
-                msgs.Add(new ChatMessage("user", CurrentContinuePrompt()));
             }
             msgs.AddRange(roundMsgs);
             msgs.Add(formatMsg);
@@ -642,140 +711,154 @@ public sealed class EventDispatcher
 
         var messages = BuildRequest();
 
-        while (roundsUsed < _options.Reply.MaxRepliesPerTurn)
+        // 3.1 多轮回复循环（数组格式）：LLM 每轮输出「回复数组」，每项 = 一条要发送的消息，
+        // 项可内嵌 tool_calls（该条发起工具调用）。程序逐条发送（间隔 Reply.IntervalMs），
+        // 数组内发起工具调用 → 执行 → 结果回填 → 继续下一轮，直到本轮无工具调用或达轮次上限。
+        int toolRounds = 0;   // 工具后继续轮次（上限 Llm.MaxToolRounds）
+        while (true)
         {
             // 每轮请求重建：基础上下文 + 本轮消息 + 格式指令（底部）
             messages = BuildRequest();
             var result = await _engine.CompleteWithToolsAsync(messages, tools, ct, reasoningExtra);
 
-            // 3.1 发言轮内循环：工具调用执行 + 格式校验重试（LLM 格式写错 → 带纠正提示重新请求）
-            string? text = null;
-            bool more = false;
             // 本发言轮是否已成功生图：图已发出后，LLM 收尾回复不再强求格式（避免重试导致重复生图）
             bool imageSent = false;
-            // 本发言轮是否执行过 shell 命令/脚本：执行后收尾回复放宽格式，且该轮不计入回复上限
+            // 本发言轮是否执行过 shell 命令/脚本：执行后收尾回复放宽格式
             bool shellUsed = false;
-            for (int fmt = 0; ; fmt++)
+            // 本轮是否执行过工具（决定是否继续下一轮）
+            bool hadToolCalls = false;
+            int fmt = 0;   // 格式重试计数
+            bool finished = false;   // 本轮已产出（发送/兜底），跳出重试循环
+
+            // 逐条发送一条消息（数组项通用：落库 + 群聊 roundMsgs + 引用/at + 间隔）
+            async Task SendItemAsync(string text)
             {
-                // 3.1.1 工具调用：LLM 决定调工具 → 执行 → 结果回填 → 再请求
-                int toolRounds = 0;
-                while (result.HasToolCalls && toolRounds < _options.Llm.MaxToolRounds)
+                if (string.IsNullOrWhiteSpace(text)) return;
+                // 防重复（跨轮）：工具执行后的下一轮，LLM 经常把上一轮的话原样重发一遍——
+                // 用"本次触发已发送集合"去重（只拦逐字相同的刷屏，不影响有意强调的新内容）
+                if (!sentTexts.Add(text))
                 {
-                    _logger.LogInformation("静静调用工具：{Tools}（第 {R} 轮）",
-                        string.Join(", ", result.ToolCalls.Select(t => t.Name)), toolRounds + 1);
-
-                    // 生图是长任务（提交 ComfyUI 后要等几十秒）：执行期间让出会话锁+全局门，
-                    // 同一会话的其他普通消息不被阻塞；完成后重新获取锁继续收尾
-                    bool longTask = result.ToolCalls.Any(t => t.Name == "generate_image");
-                    if (longTask && yieldLocks is not null && regainLocks is not null)
-                    {
-                        _logger.LogInformation("生图长任务开始：让出会话锁，其他消息可继续处理");
-                        await yieldLocks();
-                    }
-                    try
-                    {
-                        // 中间正文（边做边说）：LLM 可在发起工具调用的同时输出一句叙述（如"我查一下记录～"），
-                        // 保留进上下文并实时发给用户，营造"边说边干"的 agent 体验（独立消息，不引用、不 @）；
-                        // JSON 格式回复体、伪工具声明（"[调用工具: xxx]"）等垃圾只保留上下文，不发送
-                        if (!string.IsNullOrWhiteSpace(result.Content))
-                        {
-                            roundMsgs.Add(new ChatMessage("assistant", result.Content) { ReasoningContent = result.ReasoningContent });
-                            if (!IsFormatJunk(result.Content)
-                                && !result.Content.TrimStart().StartsWith("[调用工具", StringComparison.Ordinal))
-                            {
-                                try { await ReplyAsync(msg, result.Content, ct, atUser: false, replyTo: false); }
-                                catch (Exception ex) { _logger.LogWarning(ex, "发送中间正文失败"); }
-                            }
-                        }
-                        // assistant 消息带 tool_calls 原样回传（含 reasoning_content，DeepSeek 要求完整回传否则 400）
-                        roundMsgs.Add(new ChatMessage("assistant", null)
-                        {
-                            ToolCalls = result.ToolCalls.Select(tc => (JsonObject)new JsonObject
-                            {
-                                ["id"] = tc.Id,
-                                ["type"] = "function",
-                                ["function"] = new JsonObject
-                                {
-                                    ["name"] = tc.Name,
-                                    ["arguments"] = tc.Arguments
-                                }
-                            }).ToList(),
-                            ReasoningContent = result.ReasoningContent
-                        });
-
-                        // 执行每个工具，结果作为 tool 消息回填
-                        foreach (var call in result.ToolCalls)
-                        {
-                            var output = await _tools.ExecuteAsync(call.Name, call.Arguments, toolCtx, ct)
-                                         ?? $"工具 {call.Name} 不存在";
-                            roundMsgs.Add(new ChatMessage("tool", output) { ToolCallId = call.Id });
-
-                            // 标记生图成功（generate_image 成功返回以"已生成并发送图片"开头）
-                            if (call.Name == "generate_image" && output.StartsWith("已生成并发送图片", StringComparison.Ordinal))
-                            {
-                                imageSent = true;
-                            }
-                            // 标记执行过 shell 命令/脚本（run_shell 调用即算，无论命令成败）
-                            if (call.Name == "run_shell")
-                            {
-                                shellUsed = true;
-                            }
-                        }
-                    }
-                    finally
-                    {
-                        if (longTask && yieldLocks is not null && regainLocks is not null)
-                        {
-                            try { await regainLocks(); }
-                            catch (OperationCanceledException) { /* 程序退出中，锁状态无关紧要 */ }
-                            _logger.LogInformation("生图完成：重新获取会话锁，继续收尾");
-                        }
-                    }
-
-                    messages = BuildRequest();
-                    result = await _engine.CompleteWithToolsAsync(messages, tools, ct, reasoningExtra);
-                    toolRounds++;
+                    _logger.LogWarning("LLM 回复与之前已发送的内容逐字相同，已跳过（session={Session}）", msg.SessionKey);
+                    return;
                 }
+                _context.AppendAssistant(msg.SessionKey, text);
+                if (!msg.IsPrivate) roundMsgs.Add(new ChatMessage("assistant", text));
+                await ReplyAsync(msg, text, ct, atUser: repliesSent == 0, replyTo: repliesSent == 0);
+                repliesSent++;
+                if (_options.Reply.IntervalMs > 0)
+                    await Task.Delay(_options.Reply.IntervalMs, ct);
+            }
 
-                // 3.1.2 格式校验：截取 cot 后必须解析出合法的 {reply, more}
+            while (!finished)
+            {
+                // 3.1.1 解析回复数组 → 逐条发送 + 执行内嵌工具调用
                 var content = ReplyExtractor.Extract(new ChatResult(result.Content, result.ReasoningContent),
                     _options.Prompt.ReplyExtraction);
-                if (TryParseReplyRound(content, out var t, out var m) && !string.IsNullOrWhiteSpace(t))
+                if (TryParseReplyArray(content, out var items))
                 {
-                    text = t;
-                    more = m;
-                    break;   // 格式合格，本发言轮通过
+                    foreach (var item in items)
+                    {
+                        // 该条附带工具调用：先发话（若有），再执行工具
+                        if (item.ToolCalls is { Count: > 0 })
+                        {
+                            hadToolCalls = true;
+                            _logger.LogInformation("静静调用工具：{Tools}（第 {R} 轮）",
+                                string.Join(", ", item.ToolCalls.Select(t => t.Name)), toolRounds + 1);
+
+                            // 生图是长任务（提交 ComfyUI 后要等几十秒）：执行期间让出会话锁+全局门，
+                            // 同一会话的其他普通消息不被阻塞；完成后重新获取锁继续收尾
+                            bool longTask = item.ToolCalls.Any(t => t.Name == "generate_image");
+                            if (longTask && yieldLocks is not null && regainLocks is not null)
+                            {
+                                _logger.LogInformation("生图长任务开始：让出会话锁，其他消息可继续处理");
+                                await yieldLocks();
+                            }
+                            try
+                            {
+                                // 先发话（边说边干）
+                                if (!string.IsNullOrWhiteSpace(item.Reply))
+                                    await SendItemAsync(item.Reply);
+
+                                // assistant 消息带 tool_calls 原样回传（含 reasoning_content，DeepSeek 要求完整回传否则 400）
+                                roundMsgs.Add(new ChatMessage("assistant", item.Reply)
+                                {
+                                    ToolCalls = item.ToolCalls.Select(tc => (JsonObject)new JsonObject
+                                    {
+                                        ["id"] = tc.Id,
+                                        ["type"] = "function",
+                                        ["function"] = new JsonObject
+                                        {
+                                            ["name"] = tc.Name,
+                                            ["arguments"] = tc.Arguments
+                                        }
+                                    }).ToList(),
+                                    ReasoningContent = result.ReasoningContent
+                                });
+
+                                // 执行每个工具，结果作为 tool 消息回填
+                                foreach (var call in item.ToolCalls)
+                                {
+                                    var output = await _tools.ExecuteAsync(call.Name, call.Arguments, toolCtx, ct)
+                                                 ?? $"工具 {call.Name} 不存在";
+                                    roundMsgs.Add(new ChatMessage("tool", output) { ToolCallId = call.Id });
+
+                                    // 标记生图成功（generate_image 成功返回以"已生成并发送图片"开头）
+                                    if (call.Name == "generate_image" && output.StartsWith("已生成并发送图片", StringComparison.Ordinal))
+                                    {
+                                        imageSent = true;
+                                    }
+                                    // 标记执行过 shell 命令/脚本（run_shell 调用即算，无论命令成败）
+                                    if (call.Name == "run_shell")
+                                    {
+                                        shellUsed = true;
+                                    }
+                                }
+                            }
+                            finally
+                            {
+                                if (longTask && yieldLocks is not null && regainLocks is not null)
+                                {
+                                    try { await regainLocks(); }
+                                    catch (OperationCanceledException) { /* 程序退出中，锁状态无关紧要 */ }
+                                    _logger.LogInformation("生图完成：重新获取会话锁，继续收尾");
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // 普通消息：逐条发送（1 秒间隔）
+                            await SendItemAsync(item.Reply ?? "");
+                        }
+                    }
+                    finished = true;
+                    break;
                 }
 
-                // 工具执行轮（生图已成功 或 执行过 shell）：结果已产生，收尾文字不再强求格式——宽松提取正文即可，不做重试
+                // 3.1.2 宽松兜底（生图已成功 / 执行过 shell / 普通文本）：收尾文字不强制数组格式
                 if (imageSent || shellUsed)
                 {
-                    text = ExtractLooseReply(content);
-                    more = false;
+                    await SendItemAsync(ExtractLooseReply(content));
+                    finished = true;
                     break;
                 }
-
-                // 普通文本（非格式垃圾）：LLM 只是没按 JSON 格式写，但内容就是它想说的话——直接采用，不打回重试
-                // （打回只会诱使它重新生成 cot，导致偏离刚才的话题）
                 if (!IsFormatJunk(content))
                 {
-                    text = ExtractLooseReply(content);
-                    more = false;
+                    await SendItemAsync(ExtractLooseReply(content));
+                    finished = true;
                     break;
                 }
 
-                // 格式垃圾（半截 JSON / reply/more 键残留 / 标记残留 / markdown 残骸）：本次回复作废，带纠正提示重新请求
+                // 3.1.3 格式垃圾（半截 JSON / 非数组结构 / 标记残留）：带纠正提示重新请求
                 if (fmt >= _options.Reply.MaxFormatRetries)
                 {
                     _logger.LogWarning("LLM 回复格式连续 {N} 次不合格，放弃本发言轮（session={Session}）",
                         _options.Reply.MaxFormatRetries + 1, msg.SessionKey);
-                    text = null;
+                    finished = true;
                     break;
                 }
                 _logger.LogWarning("LLM 回复格式不合格（第 {N} 次重试），已带纠正提示重新请求（session={Session}）",
                     fmt + 1, msg.SessionKey);
-                // 纠正提示去重：连续失败时移除旧的同内容纠正消息，保证 roundMsgs 里只有一条。
-                // 纠正消息现在内联了原文，按前缀匹配（旧版静态纠正提示同样以该前缀开头，兼容清除）
+                // 纠正提示去重：连续失败时移除旧的同内容纠正消息
                 for (int i = roundMsgs.Count - 1; i >= 0; i--)
                 {
                     if (roundMsgs[i].Role == "user"
@@ -788,54 +871,23 @@ public sealed class EventDispatcher
                 roundMsgs.Add(new ChatMessage("user", BuildCorrectionMessage(content)));
                 messages = BuildRequest();
                 result = await _engine.CompleteWithToolsAsync(messages, tools, ct, reasoningExtra);
+                fmt++;
             }
 
-            // 3.2 本发言轮结果处理
-            if (string.IsNullOrWhiteSpace(text))
+            // 3.2 本轮结束：执行过工具且未达上限 → 继续下一轮（LLM 汇报结果）；否则结束
+            if (hadToolCalls && toolRounds < _options.Llm.MaxToolRounds)
             {
-                // 生图已成功且无收尾文字：图就是回复，静默结束
-                if (imageSent) break;
-                if (repliesSent == 0)
-                {
-                    _logger.LogWarning("LLM 未返回有效回复（session={Session}），已回复兜底提示", msg.SessionKey);
-                    await ReplyAsync(msg, "啊，我刚才走神了没想好怎么回……能再说一遍吗？", ct, atUser: true);
-                }
-                break;
+                toolRounds++;
+                continue;
             }
-
-            // 防重复连发：LLM 多轮输出与上一轮逐字相同 → 丢弃本轮并终止连发（避免刷屏一模一样的消息）
-            if (repliesSent > 0 && text == lastReplyText)
-            {
-                _logger.LogWarning("LLM 连发内容与上一轮完全相同，已丢弃并终止连发（session={Session}）", msg.SessionKey);
-                break;
-            }
-            lastReplyText = text;
-
-            // 追加本轮回复到上下文（落库供 get_chat_history/!history 读取）
-            _context.AppendAssistant(msg.SessionKey, text);
-            // 群聊上下文外置：自己刚说的话不进库注入，需加入 roundMsgs 供下一轮续说；
-            // 私聊历史会从库加载（含刚落库的回复），roundMsgs 只保留工具回填消息即可
-            if (!msg.IsPrivate) roundMsgs.Add(new ChatMessage("assistant", text));
-
-            // 立即发送本条（第一条用"引用回复"引用触发消息；群聊只第一条 @ 用户）
-            await ReplyAsync(msg, text, ct, atUser: repliesSent == 0, replyTo: repliesSent == 0);
-            repliesSent++;
-
-            // 回复上限计数：shell 工具执行轮不占名额（汇报执行结果不算"多轮回复"）
-            if (!shellUsed) roundsUsed++;
-
-            // LLM 说完了就停；否则自发地继续下一轮请求
-            if (!more) break;
-            if (_options.Reply.IntervalMs > 0)
-            {
-                await Task.Delay(_options.Reply.IntervalMs, ct);
-            }
+            break;
         }
 
         // 4. 后台总结长期记忆（不阻塞回复；私聊挂人/群聊挂群；信息密度门控：寒暄/短消息不触发）
         if (repliesSent > 0 && _memory.ShouldSummarize(msg.PlainText))
         {
-            long? uid = msg.IsPrivate ? msg.UserId : null;
+            // 群聊也带说话人 uid：总结出的记忆归属"群+用户"，不再是全群混合
+            long? uid = msg.UserId;
             long? gid = msg.IsPrivate ? null : msg.GroupId;
             var combined = string.Join("\n", messages.Where(m => m.Role == "assistant").Select(m => m.Content));
             _ = Task.Run(async () => await _memory.SummarizeAsync(
@@ -911,7 +963,16 @@ public sealed class EventDispatcher
             var role = uid == msg.SelfId ? "assistant" : "user";
             _users.InsertMessageIfAbsent(msg.SessionKey, $"group:{msg.GroupId}:{msgId}", role, text, uid == msg.SelfId ? null : uid);
 
-            list.Add($"{name}：{text}");
+            // 名字带 QQ 号 + 发送时间（如"黎问明（274120497）18:40：…"）：同一人可能昵称/群昵称不同，
+            // LLM 按 QQ 号关联身份，不会再把不同昵称当成不同的人；时间帮助 LLM 理解对话先后/时序；自己（静静）不标 QQ
+            var ts = m["time"]?.GetValue<long>() ?? 0;
+            var timeStr = "";
+            if (ts > 0)
+            {
+                var dt = DateTimeOffset.FromUnixTimeSeconds(ts).ToLocalTime();
+                timeStr = dt.Date == DateTime.Today ? dt.ToString("HH:mm") : dt.ToString("MM-dd HH:mm");
+            }
+            list.Add(uid == msg.SelfId ? $"{name} {timeStr}：{text}" : $"{name}（{uid}）{timeStr}：{text}");
         }
         if (list.Count == 0) return null;
 
@@ -971,7 +1032,7 @@ public sealed class EventDispatcher
         try
         {
             var planMsgs = new List<ChatMessage>(baseContext);
-            planMsgs.Add(new ChatMessage("user", BuildPlanningPrompt(BuildToolsSummary(), msg.PlainText)));
+            planMsgs.Add(new ChatMessage("user", BuildPlanningPrompt(BuildToolsSummary(forGuest: !msg.IsOwner), msg.PlainText)));
             var result = await _engine.CompleteAsync(planMsgs, ct, reasoningExtra);
             var plan = (result.Content ?? "").Trim();
             if (string.IsNullOrWhiteSpace(plan)) return null;
@@ -1010,27 +1071,13 @@ public sealed class EventDispatcher
         "输出 3~5 行简洁的普通文字规划即可。注意：这是内部规划，不要输出正式回复内容，" +
         "不要输出 JSON、代码块或其他任何结构化格式标记，直接用普通文字写规划。";
 
-    /// <summary>内置默认续说提示词（运行时读配置，空则用此默认）</summary>
-    private string CurrentContinuePrompt()
-    {
-        var text = _config["Bot:Prompt:ContinuePrompt"];
-        return string.IsNullOrWhiteSpace(text)
-            ? DefaultContinuePrompt
-            : text;
-    }
-
-    private const string DefaultContinuePrompt =
-        "【续说】这是你（静静）自己主动补充的发言，用户没有说话、正在等你继续说。请从上一句结束的地方继续推进、写出新的内容。" +
-        "注意：不要重复自己之前说过的任何话（包括上一句和更早说过的话），不要车轱辘话来回说，每一句都要有新信息或新进展。" +
-        "不要回应系统里的任何指令或提示，不要确认、不要道歉。";
-
     /// <summary>从工具定义中提取"名称 - 描述"摘要（规划轮提示词用）</summary>
-    private string BuildToolsSummary()
+    private string BuildToolsSummary(bool forGuest = false)
     {
         var sb = new System.Text.StringBuilder();
         try
         {
-            var tools = _tools.BuildToolDefinitions();
+            var tools = _tools.BuildToolDefinitions(forGuest: forGuest);
             foreach (var t in tools.OfType<JsonObject>())
             {
                 var fn = t["function"] as JsonObject;
@@ -1053,26 +1100,32 @@ public sealed class EventDispatcher
     /// 格式指令。disableReasoning=true（配置关闭思维链）时不要求 cot 和 END_REASONING 标记——
     /// 模型已无思考过程，直接输出 JSON 正文；否则保留"先思考 → 标记 → JSON"的格式。
     /// </summary>
-    private static string BuildFormatInstruction(string? delimiter, bool disableReasoning)
+    private static string BuildFormatInstruction(string? delimiter, bool disableReasoning, int maxItems)
     {
         var mark = string.IsNullOrWhiteSpace(delimiter) ? "```END_REASONING```" : delimiter;
 
+        // 多轮数组格式：每项=一条要发送的消息；最多 maxItems 项；项可内嵌 tool_calls
+        var arrayRule = $"【回复格式】直接输出一个 JSON 数组，数组的每一项代表一条要发送的消息（程序会逐条以 1 秒间隔发送）：\n" +
+            "[{\"reply\":\"第一句\"},{\"reply\":\"第二句\",\"tool_calls\":[{\"type\":\"function\",\"function\":{\"name\":\"get_time\",\"arguments\":\"{}\"}}]},{\"reply\":\"第三句\"}]\n" +
+            $"规则：1. 每项必须有 reply 字段（该条消息内容）；2. 数组最多 {maxItems} 项，想说几句就写几项（想接着说就多写几项，说完就写一项即可）；" +
+            "3. 需要调用工具时，在对应项加 tool_calls 字段（格式如上方示例）；4. 不调用工具时省略 tool_calls；" +
+            "5. 只输出 JSON 数组本身。";
+
         // 关闭思维链：不要提 cot/标记，只要求直接输出 JSON
         var format = disableReasoning
-            ? "【回复格式】直接输出一个 JSON 对象：{\"reply\":\"你要说的话\",\"more\":true或false}。" +
-              "more 表示你是否还想继续补充下一句（有后续内容想接着说时为 true，说完为 false）。" +
-              "不要输出任何思考过程、标记、markdown 代码块或多余文字。"
+            ? arrayRule + "不要输出任何思考过程、标记、markdown 代码块或多余文字。"
             : "【回复格式】每次回复：先输出你的思考过程（cot，仅供内部推理，用户看不到）；" +
-              $"思考结束后输出标记 {mark}；标记之后只输出一个 JSON 对象：" +
-              "{\"reply\":\"你要说的话\",\"more\":true或false}。" +
-              "more 表示你是否还想继续补充下一句（有后续内容想接着说时为 true，说完为 false）。" +
+              $"思考结束后输出标记 {mark}；标记之后只输出一个 JSON 数组（格式如下）：\n" +
+              arrayRule +
               "标记之前不要输出任何正文，标记之后不要输出任何额外文字。";
 
         return format +
+               "【防重复】工具执行完成后继续回复时，绝对不要重复自己已经发送过的任何一句话（包括上一轮和更早的话）。" +
+               "如果想说的话已经说过了，就只对工具结果做一句简短收尾，或者直接结束回复（输出只含空 reply 项的数组或一项收尾即可）。" +
                "【工具调用例外】当用户请求画图、查时间、查记忆、记住信息、浏览网页、执行命令等需要调用工具时，" +
-               "必须优先发起工具调用（tool_calls），不要输出上面的 JSON 和标记；" +
-               "等工具执行完毕后，再按上述格式输出最终回复。" +
-               "【边做边说】需要调用工具时，可以先输出一两句话向用户说明你正在做什么（如「我先查一下记录～」「这就画给你看～」），再发起工具调用；工具执行完后再总结结果。不要闷头调工具不说话。" +
+               "必须在数组对应项的 tool_calls 里发起工具调用（tool_calls），不要编造结果；" +
+               "等工具执行完毕后，再按上述格式输出最终回复（数组）。" +
+               "【边做边说】需要调用工具时，可以在发起工具调用的那一项里输出一句话向用户说明你正在做什么（如「我先查一下记录～」「这就画给你看～」），再发起工具调用；工具执行完后再总结结果。不要闷头调工具不说话。" +
                "【自主执行】判断出需要调用工具时直接调用，不要先询问用户是否同意、不要犹豫拖延——工具就是为你完成用户请求的手段，大胆使用。" +
                "【记忆工具例外】当用户明确要求你记住某事（说「记住…」「记下来」「记一下…」「帮我记住…」等）时，必须立即调用 remember 工具写入记忆，并在回复中明确反馈「记住了」；日常聊天不要主动记录，也不要为了表态调用本工具。";
     }
@@ -1083,8 +1136,7 @@ public sealed class EventDispatcher
     /// 先从内容中提取最外层 JSON 对象再解析；解析失败返回 false（视为格式无效，交由上层重试）。
     /// </summary>
     private static bool TryParseReplyRound(string content, out string text, out bool more)
-    {
-        text = "";
+    {        text = "";
         more = false;
         if (string.IsNullOrWhiteSpace(content)) return false;
 
@@ -1116,6 +1168,65 @@ public sealed class EventDispatcher
             // 非 JSON → 格式无效
         }
         return false;
+    }
+
+    /// <summary>多轮回复数组中的一项：reply=要发送的消息文本；ToolCalls=该条附带发起的工具调用（可空）</summary>
+    private sealed record ReplyItem(string? Reply, List<ToolCall>? ToolCalls);
+
+    /// <summary>
+    /// 解析多轮回复数组（新格式）：[{"reply":"第一句"},{"reply":"第二句","tool_calls":[...]},...]。
+    /// 容忍杂质（提取最外层 [...]）；每项须有 reply 字段（或 tool_calls）；空数组/解析失败返回 false。
+    /// </summary>
+    private static bool TryParseReplyArray(string content, out List<ReplyItem> items)
+    {
+        items = new List<ReplyItem>();
+        if (string.IsNullOrWhiteSpace(content)) return false;
+        var s = content.Trim();
+        var start = s.IndexOf('[');
+        var end = s.LastIndexOf(']');
+        if (start < 0 || end <= start) return false;
+
+        JsonArray? arr;
+        try { arr = JsonNode.Parse(s[start..(end + 1)]) as JsonArray; }
+        catch { return false; }
+        if (arr is null || arr.Count == 0) return false;
+
+        foreach (var node in arr)
+        {
+            try
+            {
+                if (node is not JsonObject obj) continue;
+                var reply = obj["reply"]?.GetValue<string>()?.Trim();
+                List<ToolCall>? calls = null;
+                if (obj["tool_calls"] is JsonArray tcs && tcs.Count > 0)
+                {
+                    calls = new List<ToolCall>();
+                    foreach (var tc in tcs.OfType<JsonObject>())
+                    {
+                        var fn = tc["function"] as JsonObject;
+                        var name = fn?["name"]?.GetValue<string>();
+                        if (string.IsNullOrWhiteSpace(name)) continue;
+                        // arguments 兼容两种形态：标准 JSON 字符串，或 LLM 不规范输出的对象（序列化成 JSON 字符串）
+                        var argsNode = fn?["arguments"];
+                        string argsStr;
+                        if (argsNode is JsonValue av && av.TryGetValue<string>(out var asStr)) argsStr = asStr;
+                        else if (argsNode is JsonObject aobj) argsStr = aobj.ToJsonString();
+                        else argsStr = "{}";
+                        calls.Add(new ToolCall(
+                            tc["id"]?.GetValue<string>() ?? Guid.NewGuid().ToString("N"),
+                            name,
+                            argsStr));
+                    }
+                }
+                if (string.IsNullOrWhiteSpace(reply) && (calls is null || calls.Count == 0)) continue;
+                items.Add(new ReplyItem(string.IsNullOrWhiteSpace(reply) ? null : reply, calls));
+            }
+            catch
+            {
+                // 单项解析失败跳过：不让 LLM 的不规范输出中断整个回复流程
+            }
+        }
+        return items.Count > 0;
     }
 
     /// <summary>
@@ -1160,10 +1271,22 @@ public sealed class EventDispatcher
 
     /// <summary>
     /// 宽松提取回复正文（生图成功后的收尾文字专用）：
-    /// 优先用健壮解析抠出 reply；抠不出就去掉 markdown 包裹取原文。
+    /// 优先解析数组（新格式：拼接各项 reply + 工具调用摘要）；再试旧对象格式；最后去 markdown 包裹取原文。
     /// </summary>
     private static string ExtractLooseReply(string content)
     {
+        // 新格式优先：数组 → 拼接所有项
+        if (TryParseReplyArray(content, out var items))
+        {
+            var parts = new List<string>();
+            foreach (var it in items)
+            {
+                if (it.ToolCalls is { Count: > 0 })
+                    parts.AddRange(it.ToolCalls.Select(t => $"[工具调用] {t.Name}({t.Arguments})"));
+                if (!string.IsNullOrWhiteSpace(it.Reply)) parts.Add(it.Reply);
+            }
+            if (parts.Count > 0) return string.Join("\n", parts);
+        }
         if (TryParseReplyRound(content, out var text, out _)) return text;
 
         var raw = content.Trim();
@@ -1234,14 +1357,25 @@ public sealed class EventDispatcher
 
         // 群聊
         if (evt.GroupId == 0) return false;
+        // 群黑名单：该群内被拉黑的 QQ 不响应（无论 @ 还是关键词触发——避免 bot 互相触发）
+        if (_users.IsGroupBlacklisted(evt.GroupId, evt.UserId))
+        {
+            _logger.LogDebug("群黑名单命中，忽略（gid={Gid} uid={Uid}）", evt.GroupId, evt.UserId);
+            return false;
+        }
         if (trigger.GroupAtOnly && !IsAtBot(evt.Message, evt.SelfId))
         {
-            if (DebugMode)
+            // 关键词触发（开关开时）：未被 @ 的消息，正文（不含引用段——GetPlainText 只取 text 段）含任一触发词也触发
+            if (!(trigger.GroupKeywordTrigger
+                  && ContainsTriggerWord(GetPlainText(evt.Message), trigger.TriggerWords)))
             {
-                _logger.LogInformation("[DEBUG] 群聊消息未触发（无 @ 机器人）：uid={Uid} 段={Segs}",
-                    evt.UserId, evt.Message?.ToJsonString());
+                if (DebugMode)
+                {
+                    _logger.LogInformation("[DEBUG] 群聊消息未触发（无 @ 机器人且不含触发词）：uid={Uid} 段={Segs}",
+                        evt.UserId, evt.Message?.ToJsonString());
+                }
+                return false;
             }
-            return false;
         }
 
         msg = new IncomingMessage(
@@ -1418,6 +1552,18 @@ public sealed class EventDispatcher
                 sb.Append(seg["data"]?["text"]?.GetValue<string>());
         }
         return sb.ToString().Trim();
+    }
+
+    /// <summary>关键词触发匹配：正文含任一触发词（逗号/顿号/分号/竖线分隔，去空）即命中</summary>
+    private static bool ContainsTriggerWord(string text, string wordsCsv)
+    {
+        if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(wordsCsv)) return false;
+        foreach (var w in wordsCsv.Split([',', '，', '、', ';', '；', '|'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var word = w.Trim();
+            if (word.Length > 0 && text.Contains(word, StringComparison.Ordinal)) return true;
+        }
+        return false;
     }
 
     /// <summary>

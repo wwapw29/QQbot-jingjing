@@ -147,6 +147,12 @@ public sealed class MemoryService
         {
             var convoText = string.Join("\n", batch.Select(x =>
                 x.Role == "user" ? $"用户说：{x.Text}" : $"机器人回：{x.Text}"));
+            // 群聊：把当前说话人 QQ 告诉 LLM——总结出的记忆默认归该说话人（专人专记），
+            // 信息明显属于其他群友时才在 user_qq 里填那个人的 QQ
+            var speakerHint = groupId.HasValue && qqId.HasValue
+                ? $"\n（背景：以上对话来自 QQ 群 {groupId.Value}，当前说话人 QQ 号是 {qqId.Value}。" +
+                  "总结出的记忆默认归当前说话人；只有信息明确属于其他群友时才在 user_qq 填其 QQ 号。）"
+                : "";
 
             // 消息队列：指令放在最后一条（近因效应，让 LLM 刚看完对话就执行提取）
             var messages = new List<ChatMessage>
@@ -157,7 +163,7 @@ public sealed class MemoryService
                     "【禁止】一次性事件（今天吃了什么/去了哪/临时心情）、寒暄、无关闲聊。\n" +
                     "【重要度】默认 1~3；用户反复提及、强烈表态或明确要求记录时才给 4~5。\n" +
                     "【trigger】给 2~6 字的唤起关键词，逗号分隔，今后聊天中提到这些词时会想起这条记忆。"),
-                new("user", $"以下是刚才的对话：\n{convoText}"),
+                new("user", $"以下是刚才的对话：\n{convoText}{speakerHint}"),
                 new("user", "现在请根据上面的对话调用 save_memories 工具，把值得长期记住的信息写入。没有值得记的就把 memories 传空数组。")
             };
 
@@ -349,9 +355,11 @@ public sealed class MemoryService
     {
         var trigger = MergeTrigger("", ExtractKeywords(content).Take(4), ExtractHardFacts(content));
         var scope = global ? "global" : (groupId.HasValue ? "group" : "user");
+        // qq_id 始终保留（群聊时=说话人）：支持"某群的某个用户"记忆粒度；
+        // 无 qqId 的群调用（理论少见）仍为群层面记忆（qq_id=null）
         return _db.UpsertMemory(
             scope: scope,
-            qqId: global || groupId.HasValue ? null : qqId,
+            qqId: global ? null : qqId,
             groupId: global || !groupId.HasValue ? null : groupId,
             content: content,
             trigger: trigger,
@@ -445,48 +453,86 @@ public sealed class MemoryService
         return result;
     }
 
-    /// <summary>写入一条记忆（含去重合并 + 归属 + 建链 + 群聊个人双写），成功返回 true</summary>
+    /// <summary>写入一条记忆（含去重合并 + 归属 + 建链），成功返回 true</summary>
     private bool WriteMemoryWithMerge(long? qqId, long? groupId, NewMemory m, string sessionKey)
     {
         var importance = Math.Clamp(m.Importance, 1, 5);
         var targetScope = m.Scope == "global" ? "global" : (groupId.HasValue ? "group" : "user");
-        // 群聊中信息明确属于某个群友（UserQq）时：主记忆存「该群+该群友」组合域，
-        // 仅在该群该人上下文命中，不污染群层面记忆也不污染该用户的其他场景
-        var targetQq = targetScope == "group" && m.UserQq.HasValue && m.UserQq.Value > 0
-            ? m.UserQq.Value
-            : (targetScope == "user" ? qqId : null);
+        // 归属 QQ 判定：
+        //  - user 域：当前对话者 qqId
+        //  - group 域：LLM 指认群友(UserQq) → 用群友；否则【从记忆内容提取出现过的 QQ 号】——
+        //    信息关于对话中提到的其他人（如"狐宝是2261914102的bot"）时归到那些人，而不是说话人；
+        //    内容无其他 QQ → 回退说话人。可能产生多个归属（内容含多人 QQ 各写一条）
+        //  - global：null
+        List<long?> ownerQqs = targetScope switch
+        {
+            "user" => [qqId],
+            "group" when m.UserQq.HasValue && m.UserQq.Value > 0 => [m.UserQq.Value],
+            "group" => ResolveGroupOwnerQqs(m.Content, qqId),
+            _ => [null]
+        };
         var targetGroup = targetScope == "group" ? groupId : null;
 
         // 正则硬事实补充 trigger（QQ/日期/时间/金额/词表+宾语）
         var enrichedTrigger = MergeTrigger(m.Trigger, [], ExtractHardFacts(m.Content));
 
-        long id;
-        // 去重合并：同归属域找相似旧记忆，相似则更新旧的而非新增
-        var similar = _db.FindSimilarMemory(targetScope, targetQq, targetGroup, m.Content, _options.DuplicateThreshold);
-        if (similar is not null)
+        long id = 0;
+        bool any = false;
+        foreach (var targetQq in ownerQqs)
         {
-            var mergedContent = m.Content.Length > similar.Content.Length ? m.Content : similar.Content;
-            var mergedTrigger = string.Join(",",
-                (enrichedTrigger + "," + similar.Trigger).Split([',', '，', ';', '；', '、'], StringSplitOptions.RemoveEmptyEntries).Distinct());
-            var mergedImp = Math.Max(similar.Importance, importance);
-            _db.UpdateMemoryContent(similar.Id, mergedContent, mergedTrigger, mergedImp);
-            id = similar.Id;
-            _logger.LogInformation("记忆去重合并：更新 [{Id}] {Content}", id, mergedContent[..Math.Min(mergedContent.Length, 40)]);
-        }
-        else
-        {
-            id = _db.UpsertMemory(targetScope, targetQq, targetGroup, m.Content, enrichedTrigger, importance, m.Category, sessionKey);
-            if (id <= 0) return false;
-        }
+            // 去重合并：同归属域找相似旧记忆，相似则更新旧的而非新增
+            var similar = _db.FindSimilarMemory(targetScope, targetQq, targetGroup, m.Content, _options.DuplicateThreshold);
+            if (similar is not null)
+            {
+                var mergedContent = m.Content.Length > similar.Content.Length ? m.Content : similar.Content;
+                var mergedTrigger = string.Join(",",
+                    (enrichedTrigger + "," + similar.Trigger).Split([',', '，', ';', '；', '、'], StringSplitOptions.RemoveEmptyEntries).Distinct());
+                var mergedImp = Math.Max(similar.Importance, importance);
+                _db.UpdateMemoryContent(similar.Id, mergedContent, mergedTrigger, mergedImp);
+                id = similar.Id;
+                _logger.LogInformation("记忆去重合并：更新 [{Id}] {Content}", id, mergedContent[..Math.Min(mergedContent.Length, 40)]);
+            }
+            else
+            {
+                id = _db.UpsertMemory(targetScope, targetQq, targetGroup, m.Content, enrichedTrigger, importance, m.Category, sessionKey);
+                if (id <= 0) continue;
+            }
+            any = true;
 
-        // 神经链：与相关旧记忆建立关联边
-        foreach (var related in m.RelatedTo)
-        {
-            if (string.IsNullOrWhiteSpace(related)) continue;
-            var oldId = _db.FindMemoryIdByContent(qqId, related);
-            if (oldId > 0 && oldId != id) _db.LinkMemories(id, oldId);
+            // 神经链：与相关旧记忆建立关联边
+            foreach (var related in m.RelatedTo)
+            {
+                if (string.IsNullOrWhiteSpace(related)) continue;
+                var oldId = _db.FindMemoryIdByContent(qqId, related);
+                if (oldId > 0 && oldId != id) _db.LinkMemories(id, oldId);
+            }
         }
+        if (!any) return false;
+
+        if (ownerQqs.Count > 1)
+            _logger.LogInformation("记忆归属多人：{Qqs}（session={Session}）", string.Join(",", ownerQqs.Where(q => q.HasValue).Select(q => q!.Value)), sessionKey);
         return true;
+    }
+
+    /// <summary>
+    /// 解析群聊记忆的信息主体归属：
+    /// 内容中出现非说话人的 QQ 号 → 归到那些人（信息关于对话中提到的他人，如"狐宝是2261914102的bot"归 2261914102）；
+    /// 内容只含说话人自己的 QQ → 归说话人；无 QQ → 回退说话人。
+    /// </summary>
+    private static List<long?> ResolveGroupOwnerQqs(string content, long? speakerQq)
+    {
+        if (!speakerQq.HasValue) return [null];
+        var matches = System.Text.RegularExpressions.Regex.Matches(content ?? "", @"(?<![\d])\d{5,11}(?![\d])");
+        var others = new List<long?>();
+        var sawSpeaker = false;
+        foreach (System.Text.RegularExpressions.Match match in matches)
+        {
+            if (!long.TryParse(match.Value, out var qq)) continue;
+            if (qq == speakerQq) { sawSpeaker = true; continue; }
+            if (!others.Contains(qq)) others.Add(qq);
+        }
+        if (others.Count > 0) return others;
+        return [speakerQq];
     }
 
     /// <summary>有效重要度 = 存储重要度 - 每天衰减量 × 距上次衰减天数（惰性计算，不落库）</summary>

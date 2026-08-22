@@ -10,6 +10,7 @@ using QQBot.Core.OneBot;
 using QQBot.Core.Options;
 using QQBot.Core.Tools;
 using QQBot.Core.Commands;
+using QQBot.Core.Chat;
 
 namespace QQBot.Core.Admin;
 
@@ -28,6 +29,8 @@ public sealed class AdminService : IHostedService
     private readonly CommandRouter _router;
     private readonly ILogger<AdminService> _logger;
     private readonly DateTime _startTime = DateTime.Now;   // 实例字段：DI 创建（程序启动）时初始化
+    private readonly HttpClient _evalHttp = new() { Timeout = TimeSpan.FromSeconds(90) };
+    private readonly object _evalLock = new();   // 评测数据文件读写锁
     private HttpListener? _listener;
     private CancellationTokenSource? _cts;
 
@@ -61,6 +64,8 @@ public sealed class AdminService : IHostedService
             new CfgItem(["Llm", "TimeoutSeconds"], "请求超时（秒）", "", "int"),
             new CfgItem(["Llm", "MaxRetries"], "失败重试次数", "", "int"),
             new CfgItem(["Llm", "MaxToolRounds"], "工具轮上限", "单条消息最多工具调用轮数", "int"),
+            new CfgItem(["Llm", "DisableReasoning"], "关闭思维链(cot)", "关=先思考再输出(带 END_REASONING 标记)；开=直接输出(省 token)", "bool"),
+            new CfgItem(["Llm", "DisableReasoningPayload"], "关闭思维链附加字段", "关闭思维链时注入请求体顶层的 JSON（豆包用 {\"thinking\":{\"type\":\"disabled\"}}）", "text"),
         ]),
         new("napcat", "NapCat 连接", "与 NapCat 的通信设置（改 WsUrl 会自动重连）", null,
         [
@@ -72,6 +77,8 @@ public sealed class AdminService : IHostedService
         [
             new CfgItem(["Trigger", "PrivateEnabled"], "私聊响应", "是否响应私聊消息", "bool"),
             new CfgItem(["Trigger", "GroupAtOnly"], "群聊仅 @ 响应", "群聊只有 @ 静静 时才响应", "bool"),
+            new CfgItem(["Trigger", "GroupKeywordTrigger"], "群聊关键词触发", "未被@时，正文(不含引用段)含触发词也响应（需配合下方触发词）", "bool"),
+            new CfgItem(["Trigger", "TriggerWords"], "群聊触发词", "逗号/顿号分隔（如 静静,静静酱）；正文含任一即触发", "string"),
             new CfgItem(["Trigger", "MergeSeconds"], "消息合并窗口(秒)", "转发+留言等连续消息合并成整体回复；0=关闭；窗口内再次@则拆分", "int"),
             new CfgItem(["Prompt", "PrivateExtra"], "私聊附加提示", "私聊场景追加的提示词", "text"),
             new CfgItem(["Prompt", "GroupExtra"], "群聊附加提示", "群聊场景追加的提示词", "text"),
@@ -82,6 +89,8 @@ public sealed class AdminService : IHostedService
             new CfgItem(["Debug"], "调试模式", "打印完整 prompt / LLM 请求日志", "bool"),
             new CfgItem(["Prompt", "AutoInjectGroupHistory"], "群记录注入", "被 @ 自动拉群记录注入（替代 get_chat_history）", "bool"),
             new CfgItem(["Prompt", "MaxContextMessages"], "历史消息条数", "会话保留的最近消息条数（群注入/拉取上限）", "int"),
+            new CfgItem(["Reply", "MaxRepliesPerTurn"], "最大续写次数", "多轮回复数组的最大条数（告诉 LLM 每次回复最多发几条，逐条间隔发送）", "int"),
+            new CfgItem(["Reply", "IntervalMs"], "连发间隔毫秒", "数组内多条消息的发送间隔（毫秒）", "int"),
         ]),
         new("planning", "规划轮", "回复前先做一次规划（手动 cot）", ["Planning", "Enabled"],
         [
@@ -90,6 +99,8 @@ public sealed class AdminService : IHostedService
         ]),
         new("vision", "识图", "图片下载压缩后用识图模型识别并注入描述", ["Vision", "Enabled"],
         [
+            new CfgItem(["Vision", "UseMainModel"], "使用主模型识图", "开=直接用主模型看图(忽略识图Model/BaseUrl/ApiKey，不带描述指令直接发图；测主模型视觉用，热更新)", "bool"),
+            new CfgItem(["Vision", "FileTtlSeconds"], "Files API 有效期秒", "DeepSeek Files API 图片上传有效期（默认 86400=24 小时；1 小时~30 天）", "int"),
             new CfgItem(["Vision", "Model"], "识图模型", "必须支持视觉（BaseUrl/ApiKey 留空=复用主 LLM）", "string"),
             new CfgItem(["Vision", "BaseUrl"], "识图 API 地址", "留空=复用主模型（热更新生效）", "string"),
             new CfgItem(["Vision", "ApiKey"], "识图 API 密钥", "留空=复用主模型（热更新生效）", "string"),
@@ -164,7 +175,7 @@ public sealed class AdminService : IHostedService
         (["Prompt", "ReplyExtraction", "Strategy"], "回复提取策略", "reasoningContent / delimiter / regex", "string"),
         (["Prompt", "ReplyExtraction", "Delimiter"], "提取分隔符", "Strategy=delimiter 时用", "string"),
         (["Prompt", "ReplyExtraction", "Regex"], "提取正则", "Strategy=regex 时用", "string"),
-        (["Prompt", "ContinuePrompt"], "续说提示词", "more=true 自发补充时的系统提示（留空=内置默认；改后即时生效）", "text"),
+        (["Prompt", "ContinuePrompt"], "续说提示词", "已废弃：多轮回复已改为数组格式（LLM 一次输出多条消息），此配置不再生效", "text"),
         (["Prompt", "PlanningPrompt"], "规划轮提示词", "正式回复前的内部规划指令模板；{Tools}=工具摘要 {UserText}=用户消息（留空=内置默认；改后即时生效）", "text"),
     ];
 
@@ -244,6 +255,11 @@ public sealed class AdminService : IHostedService
             if (path == "/api/console/run") { await HandleConsoleRunAsync(ctx); return; }
             if (path == "/api/logs/days") { await ServeJsonAsync(ctx, BuildLogDays()); return; }
             if (path == "/api/logs") { await HandleLogsAsync(ctx); return; }
+            if (path == "/api/groups" || path.StartsWith("/api/groups/", StringComparison.OrdinalIgnoreCase))
+            {
+                await HandleGroupsAsync(ctx, path);
+                return;
+            }
             if (path == "/api/llm/models") { await HandleModelListAsync(ctx); return; }
             if (path == "/api/memories" || path.StartsWith("/api/memories/", StringComparison.OrdinalIgnoreCase))
             {
@@ -251,6 +267,11 @@ public sealed class AdminService : IHostedService
                 return;
             }
             if (path == "/api/entities") { await ServeJsonAsync(ctx, BuildEntities()); return; }
+            if (path == "/api/eval" || path.StartsWith("/api/eval/", StringComparison.OrdinalIgnoreCase))
+            {
+                await HandleEvalAsync(ctx, path);
+                return;
+            }
 
             ctx.Response.StatusCode = 404;
             await WriteTextAsync(ctx, "{\"error\":\"not found\"}", "application/json");
@@ -519,6 +540,7 @@ public sealed class AdminService : IHostedService
                     ["desc"] = overridden ? ov : t.Description,
                     ["overridden"] = overridden,
                     ["disabled"] = _tools.IsDisabled(t.Name),
+                    ["guestAllowed"] = _tools.IsGuestAllowed(t.Name),
                 });
             }
             await ServeJsonAsync(ctx, arr);
@@ -613,6 +635,121 @@ public sealed class AdminService : IHostedService
         }
         catch { }
         return arr;
+    }
+
+    /// <summary>
+    /// 群管理（群黑名单，避免 bot 互相触发）：
+    ///  - GET  /api/groups → [{id, name, blacklist:[qq,...]}]（NapCat get_group_list 优先，失败回退本地已知群）
+    ///  - PUT  /api/groups/{gid}/blacklist  body {qq} → 加入黑名单，返回该群新列表
+    ///  - DELETE /api/groups/{gid}/blacklist?qq=xxx → 移出黑名单，返回该群新列表
+    /// </summary>
+    private async Task HandleGroupsAsync(HttpListenerContext ctx, string path)
+    {
+        var method = ctx.Request.HttpMethod;
+
+        if (path == "/api/groups")
+        {
+            if (method != "GET") { ctx.Response.StatusCode = 405; await WriteTextAsync(ctx, "{\"error\":\"method not allowed\"}", "application/json"); return; }
+            var arr = new JsonArray();
+            try
+            {
+                var groups = await _client.GetGroupListAsync(CancellationToken.None);
+                foreach (var (gid, name) in groups)
+                {
+                    var bl = await BuildGroupBlacklistJsonAsync(gid);
+                    arr.Add(new JsonObject { ["id"] = gid, ["name"] = name, ["blacklist"] = bl });
+                }
+                if (groups.Count == 0)
+                {
+                    // 兜底：本地已知群（消息记录统计）
+                    foreach (var (gid, count) in _db.GetKnownGroups())
+                    {
+                        arr.Add(new JsonObject { ["id"] = gid, ["name"] = $"(群 {gid})", ["blacklist"] = await BuildGroupBlacklistJsonAsync(gid), ["fallback"] = true });
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "拉取群列表失败，回退本地已知群");
+                foreach (var (gid, count) in _db.GetKnownGroups())
+                {
+                    arr.Add(new JsonObject { ["id"] = gid, ["name"] = $"(群 {gid})", ["blacklist"] = await BuildGroupBlacklistJsonAsync(gid), ["fallback"] = true });
+                }
+            }
+            await ServeJsonAsync(ctx, arr);
+            return;
+        }
+
+        // /api/groups/{gid}/blacklist
+        if (path.StartsWith("/api/groups/", StringComparison.OrdinalIgnoreCase) && path.EndsWith("/blacklist", StringComparison.OrdinalIgnoreCase))
+        {
+            var idStr = path["/api/groups/".Length..^"/blacklist".Length];
+            if (!long.TryParse(idStr, out var gid)) { ctx.Response.StatusCode = 400; await WriteTextAsync(ctx, "{\"error\":\"bad group id\"}", "application/json"); return; }
+
+            if (method == "PUT")
+            {
+                var body = JsonNode.Parse(await ReadBodyAsync(ctx)) as JsonObject;
+                var qq = body?["qq"]?.GetValue<long>() ?? 0;
+                if (qq <= 0) { ctx.Response.StatusCode = 400; await WriteTextAsync(ctx, "{\"error\":\"qq required\"}", "application/json"); return; }
+                // 先校验该 QQ 是否在群内（get_group_member_list）；拉取失败则放行（避免误拦）
+                var members = await _client.GetGroupMemberListAsync(gid, CancellationToken.None);
+                if (members.Count > 0 && !members.Any(m => m.Qq == qq))
+                {
+                    ctx.Response.StatusCode = 400;
+                    await WriteTextAsync(ctx, "{\"error\":\"该 QQ 不在这个群里\"}", "application/json");
+                    return;
+                }
+                _db.AddGroupBlacklist(gid, qq);
+                _logger.LogInformation("后台面板：群 {Gid} 加入黑名单 {Qq}", gid, qq);
+                await ServeJsonAsync(ctx, await BuildGroupBlacklistJsonAsync(gid));
+                return;
+            }
+            if (method == "DELETE")
+            {
+                var qqStr = ctx.Request.QueryString["qq"];
+                if (long.TryParse(qqStr, out var qq) && qq > 0)
+                {
+                    _db.RemoveGroupBlacklist(gid, qq);
+                    _logger.LogInformation("后台面板：群 {Gid} 移出黑名单 {Qq}", gid, qq);
+                }
+                await ServeJsonAsync(ctx, await BuildGroupBlacklistJsonAsync(gid));
+                return;
+            }
+            ctx.Response.StatusCode = 405;
+            await WriteTextAsync(ctx, "{\"error\":\"method not allowed\"}", "application/json");
+            return;
+        }
+
+        ctx.Response.StatusCode = 404;
+        await WriteTextAsync(ctx, "{\"error\":\"not found\"}", "application/json");
+    }
+
+    /// <summary>该群黑名单列表（带群昵称：拉群成员映射 qq→昵称，失败退化为纯 qq）</summary>
+    private async Task<JsonArray> BuildGroupBlacklistJsonAsync(long gid)
+    {
+        var bl = new JsonArray();
+        var qqs = _db.GetGroupBlacklist(gid);
+        if (qqs.Count == 0) return bl;
+        Dictionary<long, string> nameMap = new();
+        try
+        {
+            foreach (var (qq, name) in await _client.GetGroupMemberListAsync(gid, CancellationToken.None))
+                nameMap[qq] = name;
+        }
+        catch { /* 拉成员失败：昵称退化为 qq */ }
+        foreach (var qq in qqs)
+        {
+            var name = nameMap.TryGetValue(qq, out var n) ? n : qq.ToString();
+            bl.Add(new JsonObject { ["qq"] = qq, ["name"] = name });
+        }
+        return bl;
+    }
+
+    private JsonArray BuildGroupBlacklistJson(long gid)
+    {
+        var bl = new JsonArray();
+        foreach (var qq in _db.GetGroupBlacklist(gid)) bl.Add(new JsonObject { ["qq"] = qq, ["name"] = qq.ToString() });
+        return bl;
     }
 
     /// <summary>日志查询：GET /api/logs?date=yyyy-MM-dd&amp;level=INF&amp;q=关键词&amp;offset=0&amp;limit=200
@@ -1006,5 +1143,608 @@ public sealed class AdminService : IHostedService
         ctx.Response.ContentLength64 = bytes.Length;
         await ctx.Response.OutputStream.WriteAsync(bytes);
         ctx.Response.Close();
+    }
+
+    // ===================== 评测页（Eval） =====================
+
+    /// <summary>评测数据文件（场景 + 分数记录，JSON）</summary>
+    private static string EvalFilePath => Path.Combine(AppContext.BaseDirectory, "eval_data.json");
+
+    /// <summary>内置默认评分提示词模板（{Requirement}/{Reply} 占位）</summary>
+    private const string DefaultJudgePrompt =
+        "你是一位 AI 对话质量评审。请评估【静静回复】对【测试要求】的完成度，从三个维度打分：\n" +
+        "1. 工具使用：该调用工具（如查时间/查记录/画图）时是否正确调用（0~30 分）\n" +
+        "2. 格式合规：回复结构是否合法、无明显格式错误（0~30 分）\n" +
+        "3. 人设与内容：是否贴合静静的人设（外冷内热的小女仆、简体中文、语气自然）、是否满足要求（0~40 分）\n" +
+        "只输出 JSON：{\"score\": 总分(0-100整数), \"comment\": \"一句话点评(指出扣分点)\"}，不要输出任何多余文字。\n" +
+        "【测试要求】{Requirement}\n" +
+        "【静静回复】{Reply}";
+
+    /// <summary>评测 API：GET 状态 / PUT 评分配置 / POST 场景 / DELETE 场景 / POST 运行</summary>
+    private async Task HandleEvalAsync(HttpListenerContext ctx, string path)
+    {
+        var method = ctx.Request.HttpMethod;
+        if (method == "GET" && path == "/api/eval")
+        {
+            await ServeJsonAsync(ctx, BuildEvalState());
+            return;
+        }
+        if (method == "PUT" && path == "/api/eval/config")
+        {
+            await SaveConfigUpdatesAsync(ctx);   // 评分 LLM 配置写 appsettings（Bot.Eval.*）
+            return;
+        }
+        if (method == "POST" && path == "/api/eval/scenarios")
+        {
+            await AddEvalScenarioAsync(ctx);
+            return;
+        }
+        if (method == "PUT" && path == "/api/eval/scenarios")
+        {
+            await UpdateEvalScenarioAsync(ctx);
+            return;
+        }
+        if (method == "DELETE" && path.StartsWith("/api/eval/scenarios/", StringComparison.OrdinalIgnoreCase))
+        {
+            var id = path[(path.LastIndexOf('/') + 1)..];
+            lock (_evalLock)
+            {
+                var data = LoadEvalData();
+                if (data["scenarios"] is JsonArray arr)
+                {
+                    for (int i = arr.Count - 1; i >= 0; i--)
+                        if (arr[i]?["id"]?.GetValue<string>() == id) arr.RemoveAt(i);
+                }
+                SaveEvalData(data);
+            }
+            await ServeJsonAsync(ctx, new JsonObject { ["ok"] = true });
+            return;
+        }
+        if (method == "POST" && path == "/api/eval/run")
+        {
+            await RunEvalAsync(ctx);
+            return;
+        }
+        ctx.Response.StatusCode = 405;
+        await WriteTextAsync(ctx, "{\"error\":\"method not allowed\"}", "application/json");
+    }
+
+    /// <summary>读取评测数据文件（无文件返回空结构）</summary>
+    private static JsonObject LoadEvalData()
+    {
+        try
+        {
+            if (File.Exists(EvalFilePath))
+                return JsonNode.Parse(File.ReadAllText(EvalFilePath)) as JsonObject ?? new JsonObject { ["scenarios"] = new JsonArray() };
+        }
+        catch { /* 文件损坏按空处理 */ }
+        return new JsonObject { ["scenarios"] = new JsonArray() };
+    }
+
+    private static void SaveEvalData(JsonObject data)
+    {
+        File.WriteAllText(EvalFilePath, data.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    /// <summary>评分 LLM 配置 + 场景列表（GET /api/eval）</summary>
+    private JsonObject BuildEvalState()
+    {
+        JsonObject data;
+        lock (_evalLock) data = LoadEvalData();
+        return new JsonObject
+        {
+            ["config"] = new JsonObject
+            {
+                ["baseUrl"] = _config["Bot:Eval:BaseUrl"] ?? "",
+                ["apiKey"] = _config["Bot:Eval:ApiKey"] ?? "",
+                ["model"] = _config["Bot:Eval:Model"] ?? "",
+                ["judgePrompt"] = _config["Bot:Eval:JudgePrompt"] ?? "",
+            },
+            ["scenarios"] = (data["scenarios"] as JsonArray)?.DeepClone() ?? new JsonArray(),
+        };
+    }
+
+    private async Task AddEvalScenarioAsync(HttpListenerContext ctx)
+    {
+        var body = JsonNode.Parse(await ReadBodyAsync(ctx)) as JsonObject;
+        var name = body?["name"]?.GetValue<string>()?.Trim();
+        var requirement = body?["requirement"]?.GetValue<string>()?.Trim();
+        if (string.IsNullOrWhiteSpace(name)) name = "未命名场景";
+        lock (_evalLock)
+        {
+            var data = LoadEvalData();
+            var arr = data["scenarios"] as JsonArray ?? new JsonArray();
+            arr.Add(new JsonObject
+            {
+                ["id"] = Guid.NewGuid().ToString("N")[..12],
+                ["name"] = name,
+                ["requirement"] = requirement ?? "",
+                ["reply"] = "",
+                ["comment"] = "",
+                ["lastScore"] = null,
+                ["curScore"] = null,
+                ["formatOk"] = false,
+                ["updatedAt"] = "",
+            });
+            data["scenarios"] = arr;
+            SaveEvalData(data);
+        }
+        await ServeJsonAsync(ctx, BuildEvalState());
+    }
+
+    private async Task UpdateEvalScenarioAsync(HttpListenerContext ctx)
+    {
+        var body = JsonNode.Parse(await ReadBodyAsync(ctx)) as JsonObject;
+        var id = body?["id"]?.GetValue<string>();
+        lock (_evalLock)
+        {
+            var data = LoadEvalData();
+            var arr = data["scenarios"] as JsonArray;
+            var sc = arr?.OfType<JsonObject>().FirstOrDefault(s => s["id"]?.GetValue<string>() == id);
+            if (sc is not null)
+            {
+                if (body?["name"]?.GetValue<string>() is { } name) sc["name"] = name.Trim();
+                if (body?["requirement"]?.GetValue<string>() is { } req) sc["requirement"] = req.Trim();
+                SaveEvalData(data);
+            }
+        }
+        await ServeJsonAsync(ctx, BuildEvalState());
+    }
+
+    /// <summary>运行评测：生成静静回复 → 评分 → 更新场景分数（POST /api/eval/run）</summary>
+    private async Task RunEvalAsync(HttpListenerContext ctx)
+    {
+        var body = JsonNode.Parse(await ReadBodyAsync(ctx)) as JsonObject;
+        var id = body?["id"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(id)) id = null;   // 空/缺省 = 运行全部
+        var results = new JsonArray();
+        List<JsonObject> targets;
+        lock (_evalLock)
+        {
+            var data = LoadEvalData();
+            var arr = data["scenarios"] as JsonArray ?? new JsonArray();
+            targets = arr.OfType<JsonObject>()
+                .Where(s => id is null || s["id"]?.GetValue<string>() == id)
+                .ToList();
+        }
+        foreach (var sc in targets)
+        {
+            var req = sc["requirement"]?.GetValue<string>() ?? "";
+            var result = await RunSingleEvalAsync(req, CancellationToken.None);
+            lock (_evalLock)
+            {
+                var data = LoadEvalData();
+                var arr = data["scenarios"] as JsonArray;
+                var target = arr?.OfType<JsonObject>().FirstOrDefault(s => s["id"]?.GetValue<string>() == sc["id"]?.GetValue<string>());
+                if (target is not null)
+                {
+                    target["lastScore"] = target["curScore"]?.DeepClone();   // 原本次 → 上次（须克隆，节点不能直接移动）
+                    target["curScore"] = result.Score is null ? null : JsonValue.Create(result.Score);
+                    target["reply"] = result.Reply;
+                    target["comment"] = result.Comment ?? "";
+                    target["formatOk"] = result.FormatOk;
+                    target["updatedAt"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                    SaveEvalData(data);
+                }
+            }
+            results.Add(new JsonObject
+            {
+                ["id"] = sc["id"]?.GetValue<string>(),
+                ["name"] = sc["name"]?.GetValue<string>(),
+                ["score"] = result.Score,
+                ["reply"] = result.Reply,
+                ["comment"] = result.Comment,
+                ["formatOk"] = result.FormatOk,
+                ["error"] = result.Error,
+                ["debug"] = result.Debug,
+            });
+        }
+        await ServeJsonAsync(ctx, new JsonObject { ["ok"] = true, ["results"] = results, ["state"] = BuildEvalState() });
+    }
+
+    private sealed record EvalOutcome(int? Score, string Reply, string? Comment, bool FormatOk, string? Error, JsonObject? Debug);
+
+    /// <summary>LLM 调用结果：正文 + 请求体/响应体原文（Debug 侧栏展示用）</summary>
+    private sealed record LlmCallResult(string Content, string RequestJson, string ResponseJson, string? ToolCalls, List<ToolCall>? RawToolCalls);
+
+    /// <summary>单场景：主 LLM 生成回复 → 评分 LLM 打分；Debug 收集两路请求/响应原文</summary>
+    private async Task<EvalOutcome> RunSingleEvalAsync(string requirement, CancellationToken ct)
+    {
+        try
+        {
+            // 1) 生成回复：规划轮（开关开时）→ 主 LLM（带 tools）
+            var (replyRaw, genReq, genResp, planReq, planResp) = await GenerateEvalReplyAsync(requirement, ct);
+            // 2) 自动格式判定：能否解析出 {"reply":...} JSON（工具调用响应视为合规）
+            var (replyText, formatOk) = ExtractEvalReply(replyRaw);
+            if (replyRaw.StartsWith("[工具调用]", StringComparison.Ordinal)) formatOk = true;
+            // 3) 评分
+            var (score, comment, judgeReq, judgeResp) = await JudgeEvalAsync(requirement, replyText, ct);
+            var debug = new JsonObject
+            {
+                ["genRequest"] = genReq,
+                ["genResponse"] = genResp,
+                ["judgeRequest"] = judgeReq,
+                ["judgeResponse"] = judgeResp,
+            };
+            if (planReq is not null) debug["planRequest"] = planReq;
+            if (planResp is not null) debug["planResponse"] = planResp;
+            return new EvalOutcome(score, replyText, comment, formatOk, null, debug);
+        }
+        catch (Exception ex)
+        {
+            return new EvalOutcome(null, "", null, false, ex.Message, null);
+        }
+    }
+
+    /// <summary>
+    /// 生成静静回复（主 LLM，与生产完整回复循环同构）：
+    /// 规划轮（开关开时）→ 输出回复数组 → 逐项收集回复 + 执行内嵌工具调用（沙箱）→ 结果回填 →
+    /// 继续下一轮（LLM 汇报工具结果）→ 直到无工具调用或达轮次上限。
+    /// 返回 (全部轮次回复拼接, 最后请求, 最后响应, 规划请求?, 规划响应?)。
+    /// </summary>
+    private async Task<(string Content, string RequestJson, string ResponseJson, string? PlanRequest, string? PlanResponse)> GenerateEvalReplyAsync(string requirement, CancellationToken ct)
+    {
+        var baseUrl = (_config["Bot:Llm:BaseUrl"] ?? "").TrimEnd('/');
+        var apiKey = _config["Bot:Llm:ApiKey"] ?? "";
+        var model = _config["Bot:Llm:Model"] ?? "";
+        var role = _config["Bot:Prompt:GlobalPrePromptRole"] ?? "system";
+        var pre = _config["Bot:Prompt:GlobalPrePrompt"] ?? "";
+        var post = _config["Bot:Prompt:GlobalPostPrompt"] ?? "";
+        var sys = string.Join("\n\n", new[] { pre, post }.Where(s => !string.IsNullOrWhiteSpace(s)));
+
+        // 基础消息：人设 + 当前消息
+        var messages = new JsonArray
+        {
+            new JsonObject { ["role"] = string.IsNullOrWhiteSpace(role) ? "system" : role, ["content"] = sys },
+            new JsonObject { ["role"] = "user", ["content"] = requirement },
+        };
+
+        // ① 规划轮（受 Planning.Enabled 开关影响）
+        string? planText = null;
+        string? planReq = null, planResp = null;
+        if (string.Equals(_config["Bot:Planning:Enabled"], "true", StringComparison.OrdinalIgnoreCase))
+        {
+            var planPrompt = BuildEvalPlanningPrompt(requirement);
+            var planMsgs = new JsonArray
+            {
+                new JsonObject { ["role"] = string.IsNullOrWhiteSpace(role) ? "system" : role, ["content"] = sys },
+                new JsonObject { ["role"] = "user", ["content"] = planPrompt },
+            };
+            var plan = await CallLlmAsync(baseUrl, apiKey, model, planMsgs, ct);
+            planReq = plan.RequestJson;
+            planResp = plan.ResponseJson;
+            if (!string.IsNullOrWhiteSpace(plan.Content))
+            {
+                planText = plan.Content.Trim();
+                if (int.TryParse(_config["Bot:Planning:MaxChars"], out var maxChars) && maxChars > 0 && planText.Length > maxChars)
+                    planText = planText[..maxChars];
+            }
+            if (planText is not null)
+                messages.Add(new JsonObject { ["role"] = "user", ["content"] = $"【你的规划】\n{planText}\n\n请按照你的规划执行。" });
+        }
+
+        // 格式指令（数组；DisableReasoning 分支）
+        if (!int.TryParse(_config["Bot:Reply:MaxRepliesPerTurn"], out var maxItems) || maxItems <= 0) maxItems = 4;
+        var disableReasoning = string.Equals(_config["Bot:Llm:DisableReasoning"], "true", StringComparison.OrdinalIgnoreCase);
+        var arrayRule = $"请以 JSON 数组格式回复，数组的每一项代表一条要发送的消息：" +
+            $"[{{\"reply\":\"第一句\"}},{{\"reply\":\"第二句\",\"tool_calls\":[{{\"type\":\"function\",\"function\":{{\"name\":\"get_time\",\"arguments\":\"{{}}\"}}}}]}}]，最多 {maxItems} 项。" +
+            "需要调用工具时在对应项加 tool_calls 字段；不调用工具则省略。";
+        var formatInstr = disableReasoning
+            ? arrayRule + "只输出 JSON 数组本身，不要输出任何思考过程、标记、markdown 代码块或多余文字。"
+            : "先输出你的思考过程（cot，仅供内部推理，用户看不到）；思考结束后输出标记 ```END_REASONING```；" +
+              "标记之后只输出：" + arrayRule + "标记之前不要输出任何正文，标记之后不要输出任何额外文字。";
+
+        // 工具定义（主人视角全量）+ 评测虚拟消息（IsOwner=true，防副作用沙箱执行）
+        var tools = _tools.BuildToolDefinitions();
+        var evalMsg = new IncomingMessage(0, 0, _options.OwnerId, "主人", 0, true, requirement, new JsonArray(),
+            "eval:" + Math.Abs(requirement.GetHashCode() & 0xFFFFF), true);
+        var toolCtx = new ToolContext(evalMsg);
+
+        // ② 完整回复循环：输出数组 → 收集回复 + 执行工具（沙箱）→ 回填 → 继续
+        var allReplies = new List<string>();
+        string lastRequest = "", lastResponse = "";
+        int toolRounds = 0;
+        while (true)
+        {
+            var reqMsgs = new JsonArray();
+            foreach (var m in messages) reqMsgs.Add(m.DeepClone());
+            reqMsgs.Add(new JsonObject { ["role"] = "user", ["content"] = formatInstr });
+            var result = await CallLlmAsync(baseUrl, apiKey, model, reqMsgs, ct, tools);
+            lastRequest = result.RequestJson;
+            lastResponse = result.ResponseJson;
+
+            // 本轮回复文本（数组拼接 / 工具调用摘要）
+            var (replyText, _) = ExtractEvalReply(result.Content);
+            if (!string.IsNullOrWhiteSpace(replyText)) allReplies.Add(replyText);
+
+            // 收集工具调用：数组内嵌 + 直接 tool_calls 两种形态
+            var calls = new List<(string Id, string Name, string Args)>();
+            calls.AddRange(ExtractEvalArrayToolCalls(result.Content));
+            if (result.RawToolCalls is not null)
+                calls.AddRange(result.RawToolCalls.Select(t => (t.Id, t.Name, t.Arguments)));
+
+            if (calls.Count == 0) break;   // 无工具调用 → 回复结束
+
+            // assistant 消息带 tool_calls 回传 + 执行（沙箱）→ tool 消息回填
+            var assistant = new JsonObject { ["role"] = "assistant", ["content"] = null };
+            var tcArr = new JsonArray();
+            foreach (var c in calls)
+                tcArr.Add(new JsonObject { ["id"] = c.Id, ["type"] = "function", ["function"] = new JsonObject { ["name"] = c.Name, ["arguments"] = c.Args } });
+            assistant["tool_calls"] = tcArr;
+            messages.Add(assistant);
+            foreach (var c in calls)
+            {
+                var output = await ExecuteEvalToolAsync(c.Name, c.Args, toolCtx, ct);
+                messages.Add(new JsonObject { ["role"] = "tool", ["tool_call_id"] = c.Id, ["content"] = output });
+            }
+            toolRounds++;
+            if (toolRounds >= _options.Llm.MaxToolRounds) break;
+        }
+
+        return (string.Join("\n", allReplies), lastRequest, lastResponse, planReq, planResp);
+    }
+
+    /// <summary>评测工具沙箱：仅放行无副作用只读工具；其余返回拦截说明（防止测试时真实发消息/生图/写记忆）</summary>
+    private static readonly HashSet<string> EvalSafeTools = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "get_time", "search_memory", "get_chat_history", "get_friend_list", "browse_web",
+    };
+
+    private async Task<string> ExecuteEvalToolAsync(string name, string argsJson, ToolContext ctx, CancellationToken ct)
+    {
+        if (!EvalSafeTools.Contains(name))
+            return $"[评测沙箱] 工具 {name} 在评测环境不执行（防止副作用；实际对话中可正常执行）。";
+        try
+        {
+            return await _tools.ExecuteAsync(name, argsJson, ctx, ct) ?? $"工具 {name} 不存在";
+        }
+        catch (Exception ex)
+        {
+            return $"工具执行出错：{ex.Message}";
+        }
+    }
+
+    /// <summary>从回复数组中提取内嵌的 tool_calls（新数组格式）</summary>
+    private static List<(string Id, string Name, string Args)> ExtractEvalArrayToolCalls(string content)
+    {
+        var result = new List<(string, string, string)>();
+        var s = content?.Trim();
+        if (string.IsNullOrWhiteSpace(s)) return result;
+        var start = s.IndexOf('[');
+        var end = s.LastIndexOf(']');
+        if (start < 0 || end <= start) return result;
+        try
+        {
+            var arr = JsonNode.Parse(s[start..(end + 1)]) as JsonArray;
+            if (arr is null) return result;
+            foreach (var node in arr.OfType<JsonObject>())
+            {
+                if (node["tool_calls"] is not JsonArray tcs) continue;
+                foreach (var tc in tcs.OfType<JsonObject>())
+                {
+                    var fn = tc["function"] as JsonObject;
+                    var name = fn?["name"]?.GetValue<string>();
+                    if (string.IsNullOrWhiteSpace(name)) continue;
+                    // arguments 兼容：字符串（标准）或对象（LLM 不规范输出 → 序列化成 JSON 字符串）
+                    var argsNode = fn?["arguments"];
+                    string argsStr;
+                    if (argsNode is JsonValue av && av.TryGetValue<string>(out var asStr)) argsStr = asStr;
+                    else if (argsNode is JsonObject aobj) argsStr = aobj.ToJsonString();
+                    else argsStr = "{}";
+                    result.Add((tc["id"]?.GetValue<string>() ?? Guid.NewGuid().ToString("N"), name, argsStr));
+                }
+            }
+        }
+        catch { /* 解析失败返回空 */ }
+        return result;
+    }
+
+    /// <summary>评测规划轮提示词（Bot:Prompt:PlanningPrompt 模板，空=内置默认）</summary>
+    private string BuildEvalPlanningPrompt(string requirement)
+    {
+        var template = _config["Bot:Prompt:PlanningPrompt"];
+        if (string.IsNullOrWhiteSpace(template))
+        {
+            template = DefaultEvalPlanningPrompt;
+        }
+        return template.Replace("{Tools}", BuildToolsSummaryText()).Replace("{UserText}", requirement);
+    }
+
+    private const string DefaultEvalPlanningPrompt =
+        "在正式回复前，请先做一次回复规划（这是你的内部规划，用于理清思路，用户不会直接看到）。\n" +
+        "【用户消息】{UserText}\n" +
+        "【你可用的工具】\n{Tools}" +
+        "请规划：\n" +
+        "1. 是否需要调用工具？如果需要，先调用哪些、为什么；不需要则简单说明。\n" +
+        "2. 回复的要点、结构和语气（结合当前场景与你的身份）。\n" +
+        "输出 3~5 行简洁的普通文字规划即可。注意：这是内部规划，不要输出正式回复内容，" +
+        "不要输出 JSON、代码块或其他任何结构化格式标记，直接用普通文字写规划。";
+
+    /// <summary>工具摘要文本（规划轮提示词用，与生产 BuildToolsSummary 同构）</summary>
+    private string BuildToolsSummaryText()
+    {
+        var sb = new System.Text.StringBuilder();
+        try
+        {
+            foreach (var t in _tools.BuildToolDefinitions().OfType<JsonObject>())
+            {
+                var fn = t["function"] as JsonObject;
+                var name = fn?["name"]?.GetValue<string>();
+                var desc = fn?["description"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(name)) continue;
+                var shortDesc = string.IsNullOrWhiteSpace(desc) ? "" : (desc.Length > 80 ? desc[..80] + "…" : desc);
+                sb.Append("- ").Append(name).Append("：").Append(shortDesc).Append('\n');
+            }
+        }
+        catch { /* 摘要失败不影响评测 */ }
+        return sb.ToString();
+    }
+
+    /// <summary>评分 LLM（Bot.Eval 配置，留空复用主 LLM）</summary>
+    private async Task<(int? Score, string? Comment, string RequestJson, string ResponseJson)> JudgeEvalAsync(string requirement, string reply, CancellationToken ct)
+    {
+        var baseUrl = (_config["Bot:Eval:BaseUrl"] ?? "").TrimEnd('/');
+        var apiKey = _config["Bot:Eval:ApiKey"] ?? "";
+        var model = _config["Bot:Eval:Model"] ?? "";
+        if (string.IsNullOrWhiteSpace(baseUrl)) baseUrl = (_config["Bot:Llm:BaseUrl"] ?? "").TrimEnd('/');
+        if (string.IsNullOrWhiteSpace(apiKey)) apiKey = _config["Bot:Llm:ApiKey"] ?? "";
+        if (string.IsNullOrWhiteSpace(model)) model = _config["Bot:Llm:Model"] ?? "";
+
+        var judge = _config["Bot:Eval:JudgePrompt"] ?? "";
+        if (string.IsNullOrWhiteSpace(judge)) judge = DefaultJudgePrompt;
+        var prompt = judge.Replace("{Requirement}", requirement).Replace("{Reply}", reply);
+
+        var messages = new JsonArray { new JsonObject { ["role"] = "user", ["content"] = prompt } };
+        var result = await CallLlmAsync(baseUrl, apiKey, model, messages, ct);
+        var raw = result.Content;
+
+        // 容错解析 {"score":N,"comment":"..."}
+        var m = System.Text.RegularExpressions.Regex.Match(raw, "\"score\"\\s*:\\s*(\\d+)");
+        var score = m.Success ? int.Parse(m.Groups[1].Value) : (int?)null;
+        var c = System.Text.RegularExpressions.Regex.Match(raw, "\"comment\"\\s*:\\s*\"([^\"]*)\"");
+        return (score, c.Success ? c.Groups[1].Value : null, result.RequestJson, result.ResponseJson);
+    }
+
+    /// <summary>通用 LLM 调用（chat/completions，非流式），返回正文 + 请求/响应原文</summary>
+    private async Task<LlmCallResult> CallLlmAsync(string baseUrl, string apiKey, string model, JsonArray messages,
+                                                   CancellationToken ct, JsonArray? tools = null)
+    {
+        var body = new JsonObject
+        {
+            ["model"] = model,
+            ["messages"] = messages,
+            ["temperature"] = 0.7,
+            ["max_tokens"] = 2000,
+            ["stream"] = false,
+        };
+        // tools 必须克隆：循环内复用同一 tools 定义，直接赋值会因"节点已有父"抛异常
+        if (tools is not null && tools.Count > 0) body["tools"] = tools.DeepClone();
+        // 关闭思维链（与生产 ChatEngine.ResolveExtraBody 一致）：DisableReasoning=true 时注入 Payload 到请求体顶层
+        if (string.Equals(_config["Bot:Llm:DisableReasoning"], "true", StringComparison.OrdinalIgnoreCase))
+        {
+            var payload = _config["Bot:Llm:DisableReasoningPayload"];
+            if (!string.IsNullOrWhiteSpace(payload))
+            {
+                try
+                {
+                    if (JsonNode.Parse(payload) is JsonObject extra)
+                        foreach (var kv in extra) body[kv.Key] = kv.Value?.DeepClone();
+                }
+                catch { /* payload 格式错误则忽略 */ }
+            }
+        }
+        var requestJson = body.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+        var reqPayload = body.ToJsonString();
+
+        // 发送（网络抖动/连接复用被掐时重试 2 次；HttpRequestMessage 每次重建，StringContent 不可复用）
+        HttpResponseMessage? resp = null;
+        for (int attempt = 0; attempt < 3 && resp is null; attempt++)
+        {
+            var req = new HttpRequestMessage(HttpMethod.Post, baseUrl + "/chat/completions")
+            {
+                Content = new StringContent(reqPayload, Encoding.UTF8, "application/json"),
+            };
+            if (!string.IsNullOrWhiteSpace(apiKey))
+                req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+            try
+            {
+                resp = await _evalHttp.SendAsync(req, ct);
+            }
+            catch (Exception) when (attempt < 2)
+            {
+                await Task.Delay(1000 * (attempt + 1), ct);
+            }
+        }
+        if (resp is null) throw new HttpRequestException("LLM 请求发送失败（网络异常，重试后仍失败）");
+        var responseJson = await resp.Content.ReadAsStringAsync(ct);
+        using var resp2 = resp;
+        resp.EnsureSuccessStatusCode();
+        var node = JsonNode.Parse(responseJson);
+        var msg = node?["choices"]?[0]?["message"];
+        var content = msg?["content"]?.GetValue<string>() ?? "";
+
+        // 工具调用摘要：LLM 选择调用工具时展示（评测环境不真正执行，仅看选择是否正确）
+        string? toolSummary = null;
+        var rawCalls = new List<ToolCall>();
+        if (msg?["tool_calls"] is JsonArray tcs && tcs.Count > 0)
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (var tc in tcs.OfType<JsonObject>())
+            {
+                var fn = tc["function"] as JsonObject;
+                var name = fn?["name"]?.GetValue<string>() ?? "?";
+                // arguments 兼容：字符串或对象（LLM 不规范输出）
+                var argsNode = fn?["arguments"];
+                string args;
+                if (argsNode is JsonValue av && av.TryGetValue<string>(out var asStr)) args = asStr;
+                else if (argsNode is JsonObject aobj) args = aobj.ToJsonString();
+                else args = "";
+                sb.AppendLine($"{name}({args})");
+                if (!string.IsNullOrWhiteSpace(name))
+                    rawCalls.Add(new ToolCall(tc["id"]?.GetValue<string>() ?? Guid.NewGuid().ToString("N"), name, args));
+            }
+            toolSummary = sb.ToString().TrimEnd();
+        }
+        return new LlmCallResult(content, requestJson, responseJson, toolSummary, rawCalls.Count > 0 ? rawCalls : null);
+    }
+
+    /// <summary>从 LLM 原始输出提取回复文本（新数组格式：拼接所有项的 reply + 工具调用摘要）+ 格式是否合规</summary>
+    private static (string Text, bool FormatOk) ExtractEvalReply(string raw)
+    {
+        var s = raw.Trim();
+        // 分离 cot：若含 END_REASONING 标记，只取标记之后的部分（避免思考过程中的 [ ] 干扰数组定位）
+        const string mark = "```END_REASONING```";
+        var markIdx = s.LastIndexOf(mark, StringComparison.Ordinal);
+        if (markIdx >= 0) s = s[(markIdx + mark.Length)..].Trim();
+        // 优先解析数组（多轮回复新格式）
+        var arrStart = s.IndexOf('[');
+        var arrEnd = s.LastIndexOf(']');
+        if (arrStart >= 0 && arrEnd > arrStart)
+        {
+            try
+            {
+                var arr = JsonNode.Parse(s[arrStart..(arrEnd + 1)]) as JsonArray;
+                if (arr is { Count: > 0 })
+                {
+                    var parts = new List<string>();
+                    var formatOk = true;
+                    foreach (var node in arr)
+                    {
+                        if (node is not JsonObject obj) continue;
+                        var reply = obj["reply"]?.GetValue<string>()?.Trim();
+                        var calls = obj["tool_calls"] as JsonArray;
+                        if (calls is { Count: > 0 })
+                        {
+                            foreach (var tc in calls.OfType<JsonObject>())
+                            {
+                                var fn = tc["function"] as JsonObject;
+                                var nm = fn?["name"]?.GetValue<string>();
+                                var ag = fn?["arguments"]?.GetValue<string>();
+                                parts.Add($"[工具调用] {nm}({ag})");
+                            }
+                            if (!string.IsNullOrWhiteSpace(reply)) parts.Add(reply);
+                        }
+                        else if (!string.IsNullOrWhiteSpace(reply)) parts.Add(reply);
+                        else formatOk = false;
+                    }
+                    if (parts.Count > 0) return (string.Join("\n", parts), formatOk);
+                }
+            }
+            catch { /* 数组解析失败走兜底 */ }
+        }
+        // 兜底：旧对象格式 / 纯文本
+        var jsonStart = s.IndexOf('{');
+        var jsonEnd = s.LastIndexOf('}');
+        if (jsonStart >= 0 && jsonEnd > jsonStart)
+        {
+            try
+            {
+                var obj = JsonNode.Parse(s[jsonStart..(jsonEnd + 1)]) as JsonObject;
+                if (obj?["reply"]?.GetValue<string>() is { } reply)
+                    return (reply.Trim(), true);
+            }
+            catch { /* 解析失败走兜底 */ }
+        }
+        return (s.Length > 500 ? s[..500] + "…" : s, false);
     }
 }

@@ -92,6 +92,13 @@ public sealed class Database
                 weight  REAL    NOT NULL DEFAULT 1.0,
                 PRIMARY KEY (from_id, to_id)
             );
+
+            CREATE TABLE IF NOT EXISTS GroupBlacklist (
+                group_id   INTEGER NOT NULL,
+                qq_id      INTEGER NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+                PRIMARY KEY (group_id, qq_id)
+            );
             """;
         cmd.ExecuteNonQuery();
 
@@ -1405,5 +1412,104 @@ public sealed class Database
             _logger.LogError(ex, "统计查询失败");
             return 0;
         }
+    }
+    // ---------------- 群黑名单（群管理：避免 bot 互相触发） ----------------
+    /// <summary>该群内指定 QQ 是否在黑名单（群黑名单命中 → 不响应，无论 @ 还是关键词）</summary>
+    public bool IsGroupBlacklisted(long groupId, long qqId)
+    {
+        try
+        {
+            using var conn = Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT 1 FROM GroupBlacklist WHERE group_id=$g AND qq_id=$q LIMIT 1;";
+            cmd.Parameters.AddWithValue("$g", groupId);
+            cmd.Parameters.AddWithValue("$q", qqId);
+            return cmd.ExecuteScalar() is not null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "查询群黑名单失败");
+            return false;
+        }
+    }
+
+    /// <summary>获取该群黑名单 QQ 列表</summary>
+    public List<long> GetGroupBlacklist(long groupId)
+    {
+        var result = new List<long>();
+        try
+        {
+            using var conn = Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT qq_id FROM GroupBlacklist WHERE group_id=$g ORDER BY created_at DESC;";
+            cmd.Parameters.AddWithValue("$g", groupId);
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read()) result.Add(reader.GetInt64(0));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "读取群黑名单失败");
+        }
+        return result;
+    }
+
+    /// <summary>加入群黑名单（重复忽略）；返回是否新加入</summary>
+    public bool AddGroupBlacklist(long groupId, long qqId)
+    {
+        try
+        {
+            using var conn = Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "INSERT OR IGNORE INTO GroupBlacklist(group_id, qq_id) VALUES($g, $q);";
+            cmd.Parameters.AddWithValue("$g", groupId);
+            cmd.Parameters.AddWithValue("$q", qqId);
+            return cmd.ExecuteNonQuery() > 0;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "加入群黑名单失败");
+            return false;
+        }
+    }
+
+    /// <summary>移出群黑名单</summary>
+    public bool RemoveGroupBlacklist(long groupId, long qqId)
+    {
+        try
+        {
+            using var conn = Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "DELETE FROM GroupBlacklist WHERE group_id=$g AND qq_id=$q;";
+            cmd.Parameters.AddWithValue("$g", groupId);
+            cmd.Parameters.AddWithValue("$q", qqId);
+            return cmd.ExecuteNonQuery() > 0;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "移出群黑名单失败");
+            return false;
+        }
+    }
+
+    /// <summary>已知群列表（从消息记录统计；面板 NapCat 拉取失败时兜底）</summary>
+    public List<(long GroupId, int Count)> GetKnownGroups()
+    {
+        var result = new List<(long, int)>();
+        try
+        {
+            using var conn = Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT substr(session_key, 7), COUNT(*) FROM Messages WHERE session_key LIKE 'group:%' GROUP BY session_key ORDER BY COUNT(*) DESC;";
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                if (long.TryParse(reader.GetString(0), out var gid)) result.Add((gid, reader.GetInt32(1)));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "统计已知群失败");
+        }
+        return result;
     }
 }

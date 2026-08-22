@@ -25,6 +25,10 @@ public sealed class ChatMessage
     [JsonIgnore]
     public List<string>? ImageDataUrls { get; set; }
 
+    /// <summary>DeepSeek Files API 的 file_id 列表（如 file-api-xxx）；序列化为 content 数组的 file 块（与 ImageDataUrls 互斥，优先）</summary>
+    [JsonIgnore]
+    public List<string>? FileIds { get; set; }
+
     [JsonPropertyName("tool_calls")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public List<JsonObject>? ToolCalls { get; set; }
@@ -57,9 +61,9 @@ public sealed class ChatMessageConverter : JsonConverter<ChatMessage>
         writer.WriteStartObject();
         writer.WriteString("role", value.Role);
 
-        if (value.ImageDataUrls is { Count: > 0 })
+        if (value.ImageDataUrls is { Count: > 0 } || value.FileIds is { Count: > 0 })
         {
-            // 多模态 content 数组：文本 + 图片
+            // 多模态 content 数组：文本 + 图片（Files API file 块优先，其次 base64 image_url 块）
             writer.WritePropertyName("content");
             writer.WriteStartArray();
             if (!string.IsNullOrWhiteSpace(value.Content))
@@ -69,7 +73,17 @@ public sealed class ChatMessageConverter : JsonConverter<ChatMessage>
                 writer.WriteString("text", value.Content);
                 writer.WriteEndObject();
             }
-            foreach (var url in value.ImageDataUrls)
+            if (value.FileIds is { Count: > 0 })
+            {
+                foreach (var fid in value.FileIds)
+                {
+                    writer.WriteStartObject();
+                    writer.WriteString("type", "file");
+                    writer.WriteString("file_id", fid);
+                    writer.WriteEndObject();
+                }
+            }
+            foreach (var url in value.ImageDataUrls ?? [])
             {
                 writer.WriteStartObject();
                 writer.WriteString("type", "image_url");

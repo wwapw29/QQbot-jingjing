@@ -18,6 +18,12 @@ public sealed class ChatEngine
     private readonly ILogger<ChatEngine> _logger;
     private readonly HttpClient _http;
 
+    /// <summary>请求序列化选项：注册 ChatMessageConverter（带图消息输出多模态 content 数组）</summary>
+    private static readonly System.Text.Json.JsonSerializerOptions JsonOptions = new()
+    {
+        Converters = { new ChatMessageConverter() }
+    };
+
     public ChatEngine(LlmOptions llm, ILogger<ChatEngine> logger, BotOptions options,
                       Microsoft.Extensions.Configuration.IConfiguration config)
     {
@@ -85,7 +91,7 @@ public sealed class ChatEngine
                 : JsonNode.Parse($"{{\"type\":\"function\",\"function\":{{\"name\":\"{forceTool}\"}}}}")
         };
 
-        var json = MergeExtra(JsonSerializer.Serialize(body), ResolveExtraBody(extraBody));
+        var json = MergeExtra(JsonSerializer.Serialize(body, JsonOptions), ResolveExtraBody(extraBody));
         for (int attempt = 0; attempt <= _llm.MaxRetries; attempt++)
         {
             if (attempt > 0)
@@ -94,7 +100,6 @@ public sealed class ChatEngine
                 _logger.LogWarning("LLM 调用失败，{A}/{Max} 次重试，{S}s 后重试", attempt, _llm.MaxRetries, backoff.TotalSeconds);
                 try { await Task.Delay(backoff, ct); } catch (OperationCanceledException) { return new ChatToolResult(null, null, []); }
             }
-
             try
             {
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -174,7 +179,7 @@ public sealed class ChatEngine
             MaxTokens = _llm.MaxTokens,
             Stream = false
         };
-        var json = MergeExtra(JsonSerializer.Serialize(request), ResolveExtraBody(extraBody));
+        var json = MergeExtra(JsonSerializer.Serialize(request, JsonOptions), ResolveExtraBody(extraBody));
 
         for (int attempt = 0; attempt <= _llm.MaxRetries; attempt++)
         {

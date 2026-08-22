@@ -32,6 +32,25 @@ public sealed class ChatContext
     public void AppendAssistant(string sessionKey, string text)
         => Append(sessionKey, "assistant", text, null);
 
+    /// <summary>
+    /// 按消息唯一键插入用户消息（INSERT OR IGNORE）：返回 false=该 msg_key 已存在（重放消息）→ 调用方跳过处理。
+    /// 同时承担"落库 + 持久去重"双重职责：NapCat 重连重放的消息超过内存去重窗口后不会重复处理/重复回复。
+    /// </summary>
+    public bool InsertUserIfAbsent(string sessionKey, string msgKey, string text, long? userId)
+    {
+        var inserted = _db.InsertMessageIfAbsent(sessionKey, msgKey, "user", text, userId);
+        if (inserted)
+        {
+            var list = GetOrLoad(sessionKey);
+            lock (_lock)
+            {
+                list.Add(new ChatMessage("user", text) { UserId = userId });
+                Trim(list);
+            }
+        }
+        return inserted;
+    }
+
     private void Append(string sessionKey, string role, string content, long? userId)
     {
         var list = GetOrLoad(sessionKey);

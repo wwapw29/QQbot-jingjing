@@ -78,6 +78,13 @@ public sealed class ToolsOptions
 
     /// <summary>禁用的工具名列表；禁用的工具不发给 LLM（定义被过滤，无法被调用）</summary>
     public List<string> Disabled { get; set; } = new();
+
+    /// <summary>
+    /// 客人（非主人）对话时可用的工具白名单；空 = 全部开放（保持现状）。
+    /// 非空时仅名单内的工具对客人可见/可调用（规划轮摘要与正文 tools 定义同步过滤）；
+    /// 主人永远可用全部工具。
+    /// </summary>
+    public List<string> GuestAllowed { get; set; } = new();
 }
 
 /// <summary>ComfyUI 生图配置</summary>
@@ -255,6 +262,14 @@ public sealed class TriggerOptions
 
     /// <summary>群聊是否仅 @ 机器人 / 回复机器人 才触发</summary>
     public bool GroupAtOnly { get; set; } = true;
+
+    /// <summary>
+    /// 群聊关键词触发开关：GroupAtOnly=true 时，未被 @ 的群聊消息，正文（不含引用段）含任一触发词也触发回复。
+    /// </summary>
+    public bool GroupKeywordTrigger { get; set; } = false;
+
+    /// <summary>群聊关键词触发词列表（逗号/顿号分隔，如"静静,静静酱"）</summary>
+    public string TriggerWords { get; set; } = "静静";
 
     /// <summary>允许的用户白名单（空 = 全部允许）</summary>
     public long[] AllowedUsers { get; set; } = [];
@@ -530,6 +545,13 @@ public sealed class VisionOptions
     /// <summary>识图开关（默认关=经典模式）</summary>
     public bool Enabled { get; set; } = false;
 
+    /// <summary>
+    /// 是否使用主模型（Bot.Llm）识图：开=忽略下方 Model/BaseUrl/ApiKey，直接用主模型看图，
+    /// 且不注入描述指令（不带"你是图片描述器"/DescribePrompt，直接把图发过去）；
+    /// 用于测试主模型是否支持视觉，无需清空识图配置。
+    /// </summary>
+    public bool UseMainModel { get; set; } = false;
+
     /// <summary>专用识图模型（如 doubao-1.5-vision-pro 系列；必须支持图像输入）</summary>
     public string Model { get; set; } = "doubao-1.5-vision-pro-32k-250115";
 
@@ -541,6 +563,9 @@ public sealed class VisionOptions
 
     /// <summary>识图指令（发给识图模型的描述要求）</summary>
     public string DescribePrompt { get; set; } = "请用简洁的中文描述这张图片的内容（主体、动作、氛围、关键细节），80字以内，直接输出描述不要多余解释。";
+
+    /// <summary>DeepSeek Files API 上传有效期（秒，默认 24 小时=86400；1 小时~30 天内）</summary>
+    public int FileTtlSeconds { get; set; } = 86400;
 
     /// <summary>图片缓存目录（只存压缩后的图片）</summary>
     public string CacheDir { get; set; } = "data/vision_cache";

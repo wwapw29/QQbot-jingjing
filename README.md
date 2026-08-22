@@ -1,155 +1,187 @@
-# 静静 · QQ 机器人（QQBot）
+# 静静 QQ 机器人（QQBot）
 
-基于 **NapCat（OneBot 11）+ C#/.NET 10** 的 QQ 机器人。内置 AI 女仆人设「静静」，支持自然对话、长期记忆、识图、本地 AI 生图（ComfyUI）、定时自主活动，并带一个完整的后台管理面板。
+一个运行在本地 Windows 上的 **AI QQ 机器人**，基于 **NapCat（OneBot 11 协议）** + **C# / .NET 10** 构建。
+静静支持私聊/群聊对话、长期记忆、LLM 自主调用工具、本地 ComfyUI 生图、文件沙箱、定时自主活动等能力。
+
+> ⚠️ 请始终使用**养过一段时间的 QQ 小号**运行机器人，切勿使用主号（防风控）。
 
 ---
 
-## 功能特性
+## ✨ 功能特性
 
-- **自然对话**：DeepSeek（OpenAI 兼容接口）驱动，支持工具调用（function calling）
-- **长期记忆**：SQLite 存储，按归属（全局/用户/群/群内成员）隔离，自动总结沉淀 + 显式 `remember` 工具
-- **识图**（可选）：图片压缩后交给视觉模型描述，再注入主对话
-- **AI 生图**（可选）：本地 ComfyUI，LLM 扩写提示词后出图发到 QQ
-- **自主活动**（可选）：定时主动找主人说话、逛群、整理记忆
-- **后台管理面板**：`http://127.0.0.1:7088`，8 个页面
-- **Shell 沙箱**：可在工作区内执行命令、写文件
+| 能力 | 说明 |
+|------|------|
+| **私聊 / 群聊** | 私聊直接触发；群聊仅 @ 或回复静静时触发 |
+| **AI 对话** | OpenAI 兼容接口（默认 DeepSeek），主/客双人设，私聊/群聊场景区分 |
+| **多轮回复** | 静静可自发地多次请求 LLM，像真人一样"说一句补一句"（最多 4 轮） |
+| **回复格式校验** | LLM 输出不符格式时自动带纠正提示重试（最多 2 次），生图/执行类工具成功后放宽 |
+| **长期记忆** | SQLite 持久化 + 神经链记忆：**通用/用户/群三层**，两步定位提取（QQ/群号精确检索 + 语境筛选），function call 结构化总结，去重合并 + 用进废退衰减 |
+| **函数调用** | LLM 自主调用工具：查时间、记记忆、查记忆、发消息、**浏览网页**、**执行命令**、**ComfyUI 生图** |
+| **生图** | 接入本地 ComfyUI（你排好的 workflow），LLM 扩写提示词 → 出图 → 发 QQ，失败如实汇报 |
+| **文件沙箱** | 静静可在自己的 `data/workspace` 小空间里自由创建/修改文件、跑脚本（危险命令拦截） |
+| **主人命令** | 仅主人可用的 `!` 命令：管理记忆、查记录、直连生图等 |
+| **自主活动** | 完全没人理静静超过设定时长后，她会"无聊"地主动私聊你、看群聊插嘴、整理小空间 |
+| **多线程安全** | 全局并发门 + 会话级串行锁 + 长任务让出锁，多人同时聊不乱不阻塞 |
+| **消息去重** | NapCat 重复推送同一条消息时自动去重，不会双倍回复 |
 
-## 技术栈
+---
 
-| 组件 | 说明 |
-|---|---|
-| NapCat.Shell | OneBot 11 协议端（WS 3001 收事件 / HTTP 3000 调 API） |
-| .NET 10 | 宿主 + 对话引擎 + 工具系统（C#） |
-| LLM | OpenAI 兼容 API（DeepSeek / 豆包等均可） |
-| SQLite | 长期记忆（WAL 模式） |
-| ComfyUI | 本地生图（可选） |
-| 后台面板 | 零依赖 HttpListener + 单 HTML（admin.html） |
-
-## 目录结构
+## 🏗 技术架构
 
 ```
-QQBot/
-├── QQBot.slnx                # 解决方案
-├── scripts/                  # 启停脚本（start / stop / restart）
-├── 外部依赖/                 # QQ 安装程序 + NapCat 安装包（百度网盘下载，见快速开始）
-└── src/QQBot/
-    ├── Program.cs            # 入口 & DI 注册
-    ├── appsettings.json      # 全部配置（JSONC，支持 // 注释）
-    ├── Core/                 # 核心代码（对话/记忆/工具/命令/面板…）
-    ├── ComfyUI/Workflows/    # 生图工作流模板（可自备替换）
-    └── wwwroot/              # 后台面板前端（admin.html + d3/three 库）
+QQ 小号
+  │ 登录
+NapCat（独立进程，OneBot 11 协议）
+  ├─ 正向 WebSocket :3001  ──→  收消息事件
+  └─ HTTP API :3000      ←──  发消息
+              │
+      ┌───────┴────────┐
+      │  QQBot (C#/net10) │
+      │  事件分发器 → 主人命令 / Agent 循环（LLM+工具）│
+      │  记忆系统（SQLite）│
+      └───────┬────────┘
+        DeepSeek API（OpenAI 兼容）   ComfyUI :8188（生图）
 ```
 
-## 快速开始
+| 组件 | 角色 |
+|------|------|
+| **NapCat** | QQ 协议端，独立进程，机器人登录与协议收发都靠它 |
+| **QQBot 主程序** | C# / .NET 10 控制台应用，全部业务逻辑 |
+| **DeepSeek** | 对话/记忆总结/提示词扩写的 LLM（标准 OpenAI 格式，可换任意兼容服务） |
+| **ComfyUI** | 本地生图服务（你自备 workflow，静静只写正面提示词节点） |
+| **SQLite** | 聊天记录、用户档案、长期记忆（单文件 `data/bot.db`） |
 
-### 📦 外部依赖下载（先做这个）
+---
 
-QQ 安装程序与 NapCat 安装包体积较大，**不随仓库分发**，请从百度网盘下载：
-
-> **百度网盘**：https://pan.baidu.com/s/1xUpWmQxjVcd_juwBQfKlmg?pwd=e5jv
->
-> **提取码**：`e5jv`
->
-> 包内含：`QQ_9.9.33_x64.exe`（QQ NT 安装程序）、`NapCat.Shell.zip`（协议端完整包）、`NapCat.Shell.Windows.OneKey.zip`（一键安装包）
->
-> ⚠️ **版本说明**：以上为项目构建时随附的版本，不保证是最新版；如需更新，请自行前往 [QQ 官网](https://im.qq.com/) 与 [NapCat 官方仓库](https://github.com/NapNeko/NapCatQQ) 获取新版本。
->
-> 下载后解压到项目根目录 `外部依赖/` 下（结构：`外部依赖/QQ_9.9.33_x64.exe`、`外部依赖/NapCat.Shell.zip`、`外部依赖/NapCat.Shell.Windows.OneKey.zip`）。
-
-### 0. 前置环境
-
-- Windows 10 或 11（x64）
-- [.NET 10 SDK](https://dotnet.microsoft.com/download)（构建与运行需要）
-- 一个闲置 QQ 号（作为机器人本体）
-
-### 1. 安装 QQ 并登录
-
-运行 `外部依赖/QQ_9.9.33_x64.exe`，用机器人 QQ 号登录并保持在线（可关闭弹窗，但 QQ 进程需在后台运行）。
-
-### 2. 安装 NapCat.Shell
-
-- 方式 A（推荐）：解压 `外部依赖/NapCat.Shell.zip` 到任意目录（如 `tools/NapCat.Shell/`），运行目录内的 `start-napcat.bat`
-- 方式 B：使用 `外部依赖/NapCat.Shell.Windows.OneKey.zip` 一键包（按包内说明操作）
-
-启动后在 NapCat 的 WebUI（默认 `http://127.0.0.1:6099`）配置 **OneBot 11**：
-
-| 项 | 值 |
-|---|---|
-| 正向 WebSocket | 端口 `3001`（收事件） |
-| HTTP 服务 | 端口 `3000`（调 API） |
-| 访问令牌 | 可留空，或设置后同步填写到 `appsettings.json` 的 `Bot.AccessToken` |
-
-### 3. 配置 appsettings.json
-
-打开 `src/QQBot/appsettings.json`（VS Code 请把语言模式切到 **JSON with Comments**，否则注释会标红），至少修改：
-
-| 字段 | 说明 |
-|---|---|
-| `Bot.OwnerId` | **你的 QQ 号**（主人，最高权限） |
-| `Bot.SelfId` | **机器人 QQ 号** |
-| `Bot.Llm.BaseUrl` | 模型 API 地址（如 DeepSeek `https://api.deepseek.com/v1`） |
-| `Bot.Llm.ApiKey` | 模型 API 密钥 |
-| `Bot.Llm.Model` | 模型名 |
-| `Bot.Admin.Token` | 后台面板访问令牌（**必须改**，留空 = 仅本机无认证） |
-
-可选：`Bot.Vision.*` 识图、`Bot.ComfyUI.*` 生图、`Bot.AutoActivity.*` 自主活动，默认关闭或按需开启。
-
-### 4. 构建 & 运行
-
-```bash
-cd src/QQBot
-dotnet build
-```
-
-然后**务必使用脚本启停**（脚本会先同步配置再启动，避免配置不生效）：
+## 📁 目录结构
 
 ```
-scripts\start.bat      # 启动（首次）
-scripts\restart.bat    # 重启（改配置后）
-scripts\stop.bat       # 停止
+QQrobot/
+├── docs/                       设计文档 + NapCat 安装教程
+├── tools/
+│   ├── NapCat.Shell/           NapCat 程序（含启动脚本）
+│   └── qq-green/               绿色版 QQ（9.9.33，NapCat 注入运行）
+├── QQBot/
+│   ├── QQBot.sln
+│   ├── scripts/
+│   │   ├── start.bat           启动（同步配置 + 运行）
+│   │   ├── stop.bat            停止
+│   │   └── restart.bat         ⭐ 改配置后一键重启
+│   └── src/QQBot/
+│       ├── Program.cs          DI 装配入口
+│       ├── appsettings.json    所有配置（人设/模型/记忆/开关…）
+│       └── Core/
+│           ├── Options/        配置模型
+│           ├── OneBot/         OneBot 客户端（WS + HTTP + 去重）
+│           ├── Dispatcher/     事件分发器（触发/命令/Agent 循环）
+│           ├── Chat/           对话引擎 / 上下文 / 回复解析
+│           ├── Memory/         SQLite + 神经链记忆
+│           ├── Commands/       主人命令（!help 等）
+│           ├── Tools/          ITool 工具系统（画图/网页/shell/记忆…）
+│           ├── ComfyUI/        ComfyUI 客户端
+│           ├── Hosted/         宿主服务 + 自主活动服务
+│           └── ActivityClock.cs 自主活动空闲检测时钟
 ```
 
-### 5. 验证
+---
 
-- 用主人 QQ 私聊机器人发消息，应收到回复
-- 打开后台面板 `http://127.0.0.1:7088`，输入 `Admin.Token` 后查看统计/配置/记忆等
+## 🚀 快速启动
 
-## 常用命令（仅主人，前缀 `!`）
+### 0. 环境要求
+- Windows + .NET 10 SDK
+- QQ 小号（已登录到绿色版 QQ）
+- DeepSeek API Key（或任意 OpenAI 兼容服务）
+- ComfyUI（可选，生图用）
 
-| 命令 | 说明 |
-|---|---|
-| `!help` | 列出所有命令 |
-| `!status` | 机器人状态统计 |
-| `!memories [global\|all\|QQ号]` | 查看长期记忆 |
-| `!history [QQ号\|group 群号] [条数]` | 查看聊天记录 |
-| `!clear [QQ号\|group 群号]` | 清空聊天上下文 |
-| `!wipe [QQ号\|all]` | 清空长期记忆（慎用） |
-| `!remember [global] 内容` | 手动添加记忆 |
-| `!mdel <id>` / `!mmove <id>` / `!mimp <id> <1-5>` | 记忆管理 |
-| `!draw <提示词>` | 直连 ComfyUI 生图（所有人可用） |
-| `!summarize` | 手动总结对话沉淀记忆 |
+### 1. 启动 NapCat（协议端）
+```bat
+cd tools\NapCat.Shell
+start-napcat.bat        # 会拉起绿色版 QQ，扫码登录小号
+```
+确保 3000（HTTP）/ 3001（WS）/ 6099（WebUI）端口在监听。详见 `docs/NapCat安装教程.md`。
 
-## 后台管理面板
+### 2. 启动机器人
+双击 `QQBot\scripts\restart.bat`，看到日志：
+```
+已连接机器人账号：静静 (2049592241)
+WebSocket 已连接 ✓
+```
+即上线成功。
 
-| 页面 | 功能 |
-|---|---|
-| 数据统计 | 消息/会话/记忆量 + 近 7 天趋势 + 机器人信息 |
-| 功能开关 | 分组可视化编辑全部配置（热更新，无需重启） |
-| 基础提示词 | 编辑人设/场景提示词 |
-| 记忆库 | 记忆 CRUD + 归属调整 |
-| 记忆图谱 | 2D 分层树 / 3D 球状图（点击聚焦、拖动、返回原点） |
-| Tools 工具 | 工具启停 + 描述覆盖（热更新） |
-| !命令控制台 | 以主人身份执行 `!` 命令，结果回显面板 |
-| Debug 日志 | 按天日志查看（级别/关键词过滤、自动刷新） |
+### 3. 改配置后重启
+改完 `appsettings.json` → 双击 `restart.bat`（会自动把配置同步到运行目录）。
 
-## 常见问题
+---
 
-- **配置保存不生效？** 改配置后用 `scripts/restart.bat` 重启；面板里改的配置即时热更新。
-- **面板 Token 留空了？** `Admin.Token` 留空时接口无认证（仅限本机），分享/公网使用务必设置。
-- **日志在哪？** `data/logs/yyyy-MM-dd.log`，保留 7 天自动清理。
-- **生图不可用？** 需要本地运行 ComfyUI，并把 `ComfyUI.WorkflowPath` 指向 API 格式工作流（可参考 `ComfyUI/Workflows/` 下的模板自行替换）。
-- **appsettings.json 打开报红？** 文件是 JSONC（带注释），把编辑器语言模式切到 "JSON with Comments"。
+## ⚙️ 配置说明（appsettings.json → Bot 节点）
 
-## 免责声明
+| 节点 | 说明 |
+|------|------|
+| `OwnerId` | 主人 QQ（最高权限，命令可用） |
+| `Llm` | 模型配置：BaseUrl / ApiKey / Model / 超时重试 / 关闭思维链 |
+| `Prompt` | 提示词：全局前置/后置（role 可自定义）+ 主人/客人双人设 + **4 个场景独立 Profile**（见下） |
+| `Memory` | 记忆：DB 路径 / 保留天数 / 唤起参数 / 拒绝型对话跳过总结关键词 |
+| `Reply` | 回复：多轮上限 / 间隔 / 格式重试次数 |
+| `Command` | 命令前缀（默认 `!`） |
+| `ComfyUI` | 生图：workflow 路径 / 正提示词节点 ID / 扩写开关 |
+| `Shell` | 文件沙箱：目录 / 超时 / 输出限制 |
+| `AutoActivity` | 自主活动：空闲时长 / 各行动独立开关 |
+| `Concurrency` | 并发：同时处理的对话数上限 |
+| `Debug` | 调试开关（输出 LLM 完整请求/响应） |
 
-本项目仅供学习交流。使用本机器人请遵守所在地区法律法规与腾讯 QQ 平台规则，请勿用于骚扰、营销等用途。
+> `Llm.DisableReasoningPayload`：`{"thinking":{"type":"disabled"}}` 完全关闭思维链；`{"reasoning_effort":"low"}` 低强度思考。
+
+### 🎭 提示词场景管理（Prompt 节点）
+
+提示词按 **身份 × 场景** 解析，最终 system = 全局前置 + 解析后的身份提示词 + 场景补充 + 记忆注入 + 格式指令 + 全局后置：
+
+| 场景 Profile | 覆盖时机 | 未配置时回退到 |
+|------|------|------|
+| `OwnerPrivate` | 与主人私聊 | `Owner` 身份 + `PrivateExtra` |
+| `GuestPrivate` | 与客人私聊 | `Guest` 身份 + `PrivateExtra` |
+| `OwnerGroup` | 群聊中回复主人 | `Owner` 身份 + `GroupExtra` |
+| `GuestGroup` | 群聊中回复他人 | `Guest` 身份 + `GroupExtra` |
+
+每个 Profile 可单独设置 `SystemPrompt` / `PrePrompt` / `PostPrompt` / `Extra`(场景专属补充)：
+- **字段留空 → 自动回退**到身份默认(`Owner`/`Guest` 的对应字段)和场景补充(`PrivateExtra`/`GroupExtra`)
+- 全部留空 = 与旧版行为完全一致，随时可只覆盖想改的场景
+- 占位符 `{UserName}` / `{UserQQ}` / `{OwnerId}` 在所有提示词字段中可用
+
+---
+
+## 🎮 主人命令（仅主人 QQ 可用，前缀 `!`）
+
+```
+!help       命令清单          !status    机器人状态统计
+!memories   查看记忆          !history   查看聊天记录（支持 group 群号）
+!clear      清空聊天记录      !wipe      清空记忆
+!remember   添加记忆          !mdel      删除单条记忆
+!mmove      移动记忆归属      !mimp      修改重要度
+!summarize  手动总结最近对话沉淀记忆
+!draw       直连生图（跳过 LLM 扩写）
+```
+
+---
+
+## 🔧 二次开发：新增一个工具
+
+1. 新建类实现 `ITool`（`Core/Tools/` 下）：
+   ```csharp
+   public sealed class MyTool : ITool
+   {
+       public string Name => "my_tool";
+       public string Description => "干什么用的、什么时候调用";
+       public JsonObject ParametersSchema => new() { /* OpenAI JSON Schema */ };
+       public async Task<string> ExecuteAsync(string argsJson, ToolContext ctx, CancellationToken ct) { /* 干活 */ }
+   }
+   ```
+2. 在 `BuiltinTools.CreateAll()` 注册一行即可——LLM 就会自动学会使用它。
+
+---
+
+## ⚠️ 注意事项
+
+- **别关 NapCat 的黑窗口**——关了就掉线。
+- **频繁掉线 = 风控前兆**，停用半天再试，别硬刚。
+- **命令/工具自主性**：shell 沙箱是"防呆不防黑"级别，别让陌生人使唤静静跑命令。
+- 数据库单文件在 `bin\Debug\net10.0\data\bot.db`，备份直接拷走。

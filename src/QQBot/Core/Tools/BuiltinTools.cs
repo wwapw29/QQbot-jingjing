@@ -66,7 +66,7 @@ public sealed class RememberTool : ITool
         ["properties"] = new JsonObject
         {
             ["content"] = new JsonObject { ["type"] = "string", ["description"] = "要记住的记忆内容" },
-            ["global"] = new JsonObject { ["type"] = "boolean", ["description"] = "是否记成通用记忆（默认 false=只对该用户有效）" }
+            ["global"] = new JsonObject { ["type"] = "boolean", ["description"] = "是否记成通用记忆（默认 false=只对该用户/该群有效；仅当是静静自己的行为规则或适用于所有人的常识时才传 true，用户个人或某个群里的事绝不传 true）" }
         },
         ["required"] = new JsonArray("content"),
         ["additionalProperties"] = false
@@ -79,7 +79,7 @@ public sealed class RememberTool : ITool
         if (string.IsNullOrWhiteSpace(content)) return Task.FromResult("内容为空，无法记忆");
         var global = args?["global"]?.GetValue<bool>() ?? false;
 
-        long? qqId = ctx.Message.IsPrivate ? ctx.Message.UserId : null;
+        long? qqId = ctx.Message.UserId;   // 群聊也带说话人（记忆粒度=群+用户）
         long? groupId = ctx.Message.IsPrivate ? null : ctx.Message.GroupId;
         var id = _memory.AddMemory(qqId, groupId, content, global);
         var owner = global ? "通用" : (ctx.Message.IsPrivate ? "用户" : "群聊");

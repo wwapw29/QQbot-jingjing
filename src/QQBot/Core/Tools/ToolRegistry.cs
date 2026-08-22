@@ -31,13 +31,22 @@ public sealed class ToolRegistry
     /// <summary>工具是否被禁用（动态读配置）</summary>
     public bool IsDisabled(string name) => _options.Disabled?.Any(x => x.Equals(name, StringComparison.OrdinalIgnoreCase)) == true;
 
-    /// <summary>生成 OpenAI tools 参数（function calling 定义；描述可用配置覆盖；禁用的跳过）</summary>
-    public JsonArray BuildToolDefinitions()
+    /// <summary>工具是否对客人开放（GuestAllowed 白名单；空名单=全部开放；动态读配置）</summary>
+    public bool IsGuestAllowed(string name) =>
+        _options.GuestAllowed is null || _options.GuestAllowed.Count == 0
+            || _options.GuestAllowed.Any(x => x.Equals(name, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// 生成 OpenAI tools 参数（function calling 定义；描述可用配置覆盖；禁用的跳过）。
+    /// forGuest=true 时仅包含对客人开放的工具（主人调用传 false/不传 = 全部）。
+    /// </summary>
+    public JsonArray BuildToolDefinitions(bool forGuest = false)
     {
         var arr = new JsonArray();
         foreach (var tool in _tools.Values)
         {
             if (IsDisabled(tool.Name)) continue;
+            if (forGuest && !IsGuestAllowed(tool.Name)) continue;
             var desc = tool.Description;
             if (_options.Descriptions?.TryGetValue(tool.Name, out var custom) == true && !string.IsNullOrWhiteSpace(custom))
             {
@@ -69,6 +78,12 @@ public sealed class ToolRegistry
         {
             _logger.LogWarning("工具 {Name} 已被禁用，拒绝执行", name);
             return null;
+        }
+        // 防御：客人会话禁止调用未对其开放的工具（即使 LLM 幻觉/被注入硬调用）
+        if (!ctx.Message.IsOwner && !IsGuestAllowed(name))
+        {
+            _logger.LogWarning("工具 {Name} 未对客人开放，拒绝执行（uid={Uid}）", name, ctx.Message.UserId);
+            return $"工具 {name} 当前不可用。";
         }
         try
         {

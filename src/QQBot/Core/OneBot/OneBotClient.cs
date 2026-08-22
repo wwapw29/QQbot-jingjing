@@ -366,6 +366,34 @@ public sealed class OneBotClient
         }
     }
 
+    /// <summary>获取某群成员列表（get_group_member_list，NapCat 支持）：(QQ, 群昵称[无则用户昵称])</summary>
+    public async Task<List<(long Qq, string Name)>> GetGroupMemberListAsync(long groupId, CancellationToken ct = default)
+    {
+        try
+        {
+            var body = new JsonObject { ["group_id"] = groupId };
+            var node = await PostForDataAsync("get_group_member_list", body, ct);
+            var arr = node?["data"] as JsonArray;
+            if (arr is null) return [];
+            var list = new List<(long, string)>();
+            foreach (var m in arr.OfType<JsonObject>())
+            {
+                var qq = m["user_id"]?.GetValue<long>() ?? 0;
+                if (qq <= 0) continue;
+                var name = m["card"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(name)) name = m["nickname"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(name)) name = qq.ToString();
+                list.Add((qq, name));
+            }
+            return list;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "获取群成员列表失败（group={Gid}）", groupId);
+            return [];
+        }
+    }
+
     /// <summary>获取某群最近 count 条消息（get_group_msg_history，NapCat 支持；返回旧→新）</summary>
     public async Task<List<JsonObject>> GetGroupMessagesAsync(long groupId, int count, CancellationToken ct = default)
     {
