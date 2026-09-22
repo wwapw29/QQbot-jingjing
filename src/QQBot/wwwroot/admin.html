@@ -484,13 +484,13 @@ function renderMeta(bot){
     `<span>运行 <b>${up} 分钟</b></span>`;
 }
 
-// 主人 QQ 由后端下发（/api/stats 的 owner），页面里不写死 —— 免得把真实 QQ 号带进公开仓库
+// 主人 QQ 由后端下发（/api/stats → bot.owner），页面里不写死 —— 免得把真实 QQ 号带进公开仓库
 let OWNER_QQ = 0;
 
 async function loadStats(){
   try{
     const d = await api('/api/stats');
-    if (d.owner) OWNER_QQ = d.owner;      // 记忆图谱里给主人加个皇冠用
+    if (d.bot && d.bot.owner) OWNER_QQ = d.bot.owner;   // 记忆图谱里给主人加个皇冠用（不再写死 QQ 号）
     document.getElementById('st-msgs').textContent = fmtNum(d.messages);
     document.getElementById('st-sess').textContent = fmtNum(d.sessions);
     document.getElementById('st-mems').textContent = fmtNum(d.memories);
