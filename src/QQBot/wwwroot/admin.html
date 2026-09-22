@@ -119,6 +119,47 @@ button:hover{border-color:var(--ac);color:var(--ac)}
 .btn-mini:hover{border-color:var(--ac);color:var(--ac)}
 .cfg-row .model-wrap{display:flex;align-items:center;gap:6px}
 .cfg-row input.model-input{width:220px}
+/* 工作流管理控件 */
+.wf-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.wf-bar .btn-mini{margin-left:0}
+.wf-info{color:var(--tx3);font-size:12px}
+.modecard{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--bg2);margin-bottom:14px}
+.mc-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.mc-badge{font-weight:600;font-size:13px;padding:2px 10px;border-radius:10px;background:var(--bg3);color:var(--tx);border:1px solid var(--line)}
+.mc-badge.game{background:#3a2320;color:#ffb4a2;border-color:#7a4238}
+.mc-badge.away{background:#20293a;color:#a9c6ff;border-color:#3a4a7a}
+.mc-badge.normal{background:#1f3326;color:#a8e6b8;border-color:#356b45}
+.mc-sum{font-size:12px;color:var(--tx2)}
+.mc-line{font-size:12px;color:var(--tx2);line-height:1.7}
+.mc-dim{color:var(--tx3)}
+.mc-lab{font-size:12px;color:var(--tx3);display:inline-flex;align-items:center;gap:4px}
+.mc-lab select{background:var(--bg3);border:1px solid var(--line);color:var(--tx);border-radius:6px;padding:3px 6px;font-size:12px}
+.petcfg{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--bg2);width:100%}
+.petcfg-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+.petcfg-bar .btn-mini{margin-left:0}
+.petcfg-info{font-size:12px;color:var(--tx3)}
+.petcfg-sec{margin:10px 0 4px;color:var(--ac);font-size:12px;font-weight:600;letter-spacing:.5px}
+.petcfg-row{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:4px}
+.petcfg-f{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--tx2)}
+.petcfg-f input{background:var(--bg3);border:1px solid var(--line);color:var(--tx);border-radius:6px;padding:4px 7px;font-size:12px;width:104px}
+.petcfg-f input.wide{width:230px}
+.petcfg-f input[type=checkbox]{width:16px;height:16px;padding:0;accent-color:var(--ac)}
+.petcfg-f select{background:var(--bg3);border:1px solid var(--line);color:var(--tx);border-radius:6px;padding:4px 7px;font-size:12px;min-width:110px}
+.petcfg-act{display:flex;align-items:center;gap:8px;margin-bottom:5px;flex-wrap:wrap}
+.petcfg-act .btn-mini{margin-left:0}
+.petcfg-name{font-size:12px;color:var(--tx);min-width:64px;font-weight:600}
+.wf-list{display:flex;flex-direction:column;gap:10px}
+.wf-card{border:1px solid var(--line);border-radius:8px;padding:10px 12px;background:var(--bg2)}
+.wf-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.wf-head b{font-size:13px}
+.wf-head .wf-meta{color:var(--tx3);font-size:12px}
+.wf-head .wf-def{display:flex;align-items:center;gap:4px;font-size:12px;color:var(--tx2);cursor:pointer}
+.wf-desc{width:100%;margin-top:8px;background:var(--bg3);border:1px solid var(--line);color:var(--tx);border-radius:6px;padding:7px 9px;font-size:12.5px;font-family:inherit;resize:vertical}
+.wf-desc:focus{outline:none;border-color:var(--ac)}
+.wf-nodes{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:8px;color:var(--tx3);font-size:12px}
+.wf-nodes input{background:var(--bg3);border:1px solid var(--line);color:var(--tx);border-radius:6px;padding:5px 8px;font-size:12px;width:88px}
+.wf-nodes input.wf-key{width:78px}
+.wf-nodes .btn-mini{margin-left:0}
 </style>
 </head>
 <body>
@@ -127,6 +168,7 @@ button:hover{border-color:var(--ac);color:var(--ac)}
   <nav>
     <a data-page="stats" class="active">统计</a>
     <a data-page="switches">开关</a>
+    <a data-page="pet">桌面精灵</a>
     <a data-page="prompts">提示词</a>
     <a data-page="memories">记忆库</a>
     <a data-page="graph">记忆图谱</a>
@@ -169,7 +211,37 @@ button:hover{border-color:var(--ac);color:var(--ac)}
         <button id="revert-all">全部撤回</button>
       </span>
     </h2>
+    <div id="mode-card" class="modecard">
+      <div class="mc-head">
+        <span class="mc-badge" id="mc-badge">…</span>
+        <span class="mc-sum" id="mc-sum">正在读取主机状态…</span>
+        <span style="margin-left:auto;display:inline-flex;gap:6px;align-items:center">
+          <label class="mc-lab">强制模式
+            <select id="mc-force">
+              <option value="auto">自动判定</option>
+              <option value="game">锁定：游戏</option>
+              <option value="normal">锁定：一般</option>
+              <option value="away">锁定：看家</option>
+            </select>
+          </label>
+          <button id="mc-refresh" class="btn-mini">立即刷新</button>
+        </span>
+      </div>
+      <div class="mc-line" id="mc-line"></div>
+      <div class="mc-line mc-dim" id="mc-reason"></div>
+      <div class="mc-line mc-dim" id="mc-meta"></div>
+    </div>
     <div id="switches" style="display:flex;flex-direction:column;gap:12px"></div>
+  </section>
+  <section id="page-pet" class="page">
+    <h2>桌面精灵
+      <small>桌面精灵（DesktopPet）的开关与外观 + 她的截屏设置（<code>capture_screen</code>：看你在做什么，仅主人可用）。精灵配置保存后<b>几秒内她自己套用</b>，不用重启；位置与后端连接参数是桌面端本机设置，这里改不了</small>
+      <span style="float:right;display:inline-flex;gap:8px;margin-top:-4px">
+        <button id="save-pet" style="background:var(--ac);color:#fff;border:none">保存全部</button>
+        <button id="revert-pet">全部撤回</button>
+      </span>
+    </h2>
+    <div id="pet-groups" style="display:flex;flex-direction:column;gap:12px"></div>
   </section>
   <section id="page-prompts" class="page">
     <h2>基础提示词
@@ -412,9 +484,13 @@ function renderMeta(bot){
     `<span>运行 <b>${up} 分钟</b></span>`;
 }
 
+// 主人 QQ 由后端下发（/api/stats 的 owner），页面里不写死 —— 免得把真实 QQ 号带进公开仓库
+let OWNER_QQ = 0;
+
 async function loadStats(){
   try{
     const d = await api('/api/stats');
+    if (d.owner) OWNER_QQ = d.owner;      // 记忆图谱里给主人加个皇冠用
     document.getElementById('st-msgs').textContent = fmtNum(d.messages);
     document.getElementById('st-sess').textContent = fmtNum(d.sessions);
     document.getElementById('st-mems').textContent = fmtNum(d.memories);
@@ -765,7 +841,7 @@ function renderGraph(){
 function showGraphDetail(m){
   if (!m) return;
   const el = document.getElementById('graph-detail');
-  const qq = m.qqId ? (m.qqId === 274120497 ? '👑 主人' : m.qqId) : null;
+  const qq = m.qqId ? (OWNER_QQ && m.qqId === OWNER_QQ ? '👑 主人' : m.qqId) : null;
   document.getElementById('graph-detail-body').innerHTML = `
     <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
       <span class="scope-tag ${m.scope==='global'?'tag-global':m.scope==='user'?'tag-user':'tag-group'}" style="border:1px solid">${m.scope}</span>
@@ -1024,7 +1100,7 @@ function graphHome(){
 
 function buildItemRow(it, group){
   const row = document.createElement('div');
-  row.className = 'cfg-row' + (it.type === 'text' ? ' ta-row' : '');
+  row.className = 'cfg-row' + (it.type === 'text' || it.type === 'wflist' || it.type === 'petcfg' ? ' ta-row' : '');
   const left = document.createElement('div');
   left.className = 'ct';
   const restart = it.needsRestart ? ' <span class="restart-mark" title="该配置在程序启动时固定，保存后需要重启 QQBot 才能生效">*</span>' : '';
@@ -1093,6 +1169,485 @@ function buildItemRow(it, group){
     input.addEventListener('change', () => markDirty(row, 'Bot.' + it.path, input.value));
     wrap.appendChild(input); wrap.appendChild(btn); wrap.appendChild(sel);
     right.insertBefore(wrap, tag);
+  } else if (it.type === 'wfnode'){
+    // 注入提示词组件 ID：可手动填写；点「读取工作流节点」列出当前 workflow 的节点 → 下拉选择（自动带出字段名）
+    const wrap = document.createElement('div');
+    wrap.className = 'model-wrap';
+    const input = document.createElement('input');
+    input.type = 'text'; input.className = 'model-input';
+    input.value = it.value ?? '';
+    it._input = input;
+    const sel = document.createElement('select');
+    sel.className = 'btn-mini';
+    sel.style.display = 'none';
+    sel.innerHTML = '<option value="">选择节点…</option>';
+    const btn = document.createElement('button');
+    btn.className = 'btn-mini'; btn.textContent = '读取工作流节点';
+    btn.addEventListener('click', async () => {
+      btn.textContent = '读取中…';
+      try{
+        const r = await api('/api/comfyui/nodes');
+        if (r.error){ toast('读取失败：' + r.error, true); return; }
+        const list = r.nodes || [];
+        if (!list.length){ toast('workflow 里没有可用节点'); return; }
+        sel.innerHTML = '<option value="">选择节点（共 ' + list.length + ' 个）…</option>' + list.map(n => {
+          const f = (n.fields || []).find(x => x.kind === 'text');           // 默认带出第一个可写字符串字段
+          const name = [n.id, n.class, n.title].filter(Boolean).join(' · ');
+          const label = name + (f ? '　【字段 ' + f.key + '】' : '');
+          return `<option value="${n.id}" data-field="${f ? f.key : ''}">${label.replace(/"/g, '&quot;')}</option>`;
+        }).join('');
+        sel.style.display = '';
+        sel.focus();
+        toast('已读取 ' + list.length + ' 个节点：选一个作为提示词注入点');
+      }catch(e){ toast('读取失败：' + e.message, true); }
+      finally{ btn.textContent = '读取工作流节点'; }
+    });
+    sel.addEventListener('change', () => {
+      if (!sel.value) return;
+      input.value = sel.value;
+      markDirty(row, 'Bot.' + it.path, sel.value);
+      // 同时把「注入字段名」填成该节点的可写字段（value / text 等）
+      const field = sel.selectedOptions[0]?.dataset.field || '';
+      const keyItem = (groupsCache || []).flatMap(g => g.items || []).find(x => x.path === 'ComfyUI.PositiveValueKey');
+      if (field && keyItem && keyItem._input){
+        keyItem._input.value = field;
+        markDirty(keyItem._input.closest('.cfg-row') || row, 'Bot.ComfyUI.PositiveValueKey', field);
+      }
+      toast('已选节点 ' + sel.value + (field ? '（字段 ' + field + '）' : '（该节点无可写字符串字段，请确认字段名）'));
+    });
+    input.addEventListener('change', () => markDirty(row, 'Bot.' + it.path, input.value));
+    wrap.appendChild(input); wrap.appendChild(btn); wrap.appendChild(sel);
+    right.insertBefore(wrap, tag);
+  } else if (it.type === 'screenmon'){
+    // 截屏取哪块屏：可手填编号；点「读取屏幕」列出本机显示器（编号/分辨率/主屏）→ 下拉选择
+    const wrap = document.createElement('div');
+    wrap.className = 'model-wrap';
+    const input = document.createElement('input');
+    input.type = 'text'; input.className = 'model-input';
+    input.style.width = '70px';
+    input.value = it.value ?? '0';
+    it._input = input;
+    const sel = document.createElement('select');
+    sel.className = 'btn-mini';
+    sel.style.display = 'none';
+    const btn = document.createElement('button');
+    btn.className = 'btn-mini'; btn.textContent = '读取屏幕';
+    btn.addEventListener('click', async () => {
+      btn.textContent = '读取中…';
+      try{
+        const r = await api('/api/screen/monitors');
+        if (r.error){ toast('读取失败：' + r.error, true); return; }
+        const list = r.monitors || [];
+        if (!list.length){ toast('没枚举到显示器'); return; }
+        sel.innerHTML = '<option value="">选择屏幕（共 ' + list.length + ' 项）…</option>' + list.map(m =>
+          `<option value="${m.index}">${String(m.label || ('屏幕 ' + m.index)).replace(/"/g,'&quot;')}</option>`
+        ).join('');
+        sel.style.display = '';
+        sel.focus();
+        toast('当前设置：' + (r.current ?? 0) + '（' + list.length + ' 项可选）');
+      }catch(e){ toast('读取失败：' + e.message, true); }
+      finally{ btn.textContent = '读取屏幕'; }
+    });
+    sel.addEventListener('change', () => {
+      if (sel.value === '') return;
+      input.value = sel.value;
+      markDirty(row, 'Bot.' + it.path, sel.value);
+      toast('已选：' + sel.selectedOptions[0].textContent);
+    });
+    input.addEventListener('change', () => markDirty(row, 'Bot.' + it.path, input.value));
+    wrap.appendChild(input); wrap.appendChild(btn); wrap.appendChild(sel);
+    right.insertBefore(wrap, tag);
+  } else if (it.type === 'petcfg'){
+    // 桌面精灵配置：整份 pet.json 结构的表单，存到后端 /api/pet/config。
+    // 桌面端每 3 秒心跳时会比对版本号，发现变了就自动拉取套用（不用去碰桌面端的文件）
+    const wrap = document.createElement('div');
+    wrap.className = 'petcfg';
+    const bar = document.createElement('div'); bar.className = 'petcfg-bar';
+    const btnSave = document.createElement('button'); btnSave.className = 'btn-mini primary'; btnSave.textContent = '保存精灵配置';
+    const btnReload = document.createElement('button'); btnReload.className = 'btn-mini'; btnReload.textContent = '重新载入';
+    const btnDefault = document.createElement('button'); btnDefault.className = 'btn-mini'; btnDefault.textContent = '填入默认值';
+    const info = document.createElement('span'); info.className = 'petcfg-info'; info.textContent = '加载中…';
+    bar.append(btnSave, btnReload, btnDefault, info);
+    const form = document.createElement('div');
+    wrap.append(bar, form);
+
+    const DEFAULTS = () => ({
+      name: '静静', assetDir: 'assets/placeholder', scale: 1, alwaysOnTop: true, breath: true,
+      locked: false, clickThroughInGame: true,
+      snap: { enabled: true, threshold: 36, animate: true },
+      backend: { enabled: true, baseUrl: 'http://127.0.0.1:7088', token: '', timeoutSeconds: 180, replyGapMs: 900, inboxPollMs: 3000 },
+      actions: {
+        idle: { frames: ['idle/1.png', 'idle/2.png'], fps: 1.2, loop: true, triggers: [], weight: 1, tools: [] },
+        talk: { frames: ['talk/1.png', 'talk/2.png'], fps: 5.5, loop: true, triggers: [], weight: 1, tools: [] },
+        thinking: { frames: ['idle/2.png'], fps: 1, loop: true, triggers: [], weight: 1, tools: [] },
+        startup: { frames: [], fps: 4, loop: true, triggers: [], weight: 1, tools: [] },
+        error: { frames: [], fps: 4, loop: true, triggers: [], weight: 1, tools: [] }
+      },
+      bubble: { foreground: '#FF2B2B33', background: '#F2FFFFFF', border: '#66C77FB0', fontFamily: 'Microsoft YaHei UI', fontSize: 14, maxWidth: 320, baseSeconds: 4, secondsPerChar: 0.25, maxSeconds: 0, typeSpeed: 28, cornerRadius: 12, gapSeconds: 0.6, gapSecondsPerChar: 0.03, gapMaxSeconds: 0 }
+    });
+
+    let cfg = null;
+    let toolNames = [];               // 后端已注册的工具名（工具绑定下拉用）
+
+    async function fetchTools(){
+      try{
+        const t = await api('/api/tools');
+        const arr = Array.isArray(t) ? t : (t.tools || []);
+        toolNames = arr.map(x => (typeof x === 'string' ? x : x.name)).filter(Boolean);
+      }catch(e){ toolNames = []; }
+    }
+
+    const sec = t => { const d = document.createElement('div'); d.className = 'petcfg-sec'; d.textContent = t; return d; };
+    const row = (...els) => { const d = document.createElement('div'); d.className = 'petcfg-row'; els.forEach(e => d.appendChild(e)); return d; };
+    function field(label, value, onInput, o = {}){
+      const f = document.createElement('label'); f.className = 'petcfg-f';
+      const sp = document.createElement('span'); sp.textContent = label;
+      const i = document.createElement('input');
+      i.type = o.type || 'text';
+      if (o.type === 'checkbox'){ i.checked = !!value; i.addEventListener('change', () => onInput(i.checked)); }
+      else {
+        i.value = value ?? '';
+        if (o.step) i.step = o.step;
+        if (o.wide) i.className = 'wide';
+        i.addEventListener('input', () => onInput(o.type === 'number' ? (parseFloat(i.value) || 0) : i.value));
+      }
+      f.append(sp, i);
+      return f;
+    }
+
+    function render(){
+      form.innerHTML = '';
+      form.appendChild(sec('外观'));
+      form.appendChild(row(
+        field('名称', cfg.name, v => cfg.name = v),
+        field('皮肤目录', cfg.assetDir, v => cfg.assetDir = v, { wide: true }),
+        field('缩放', cfg.scale, v => cfg.scale = v, { type: 'number', step: '0.05' }),
+        field('置顶', cfg.alwaysOnTop, v => cfg.alwaysOnTop = v, { type: 'checkbox' }),
+        field('呼吸', cfg.breath, v => cfg.breath = v, { type: 'checkbox' })
+      ));
+      form.appendChild(row(
+        field('锁定位置和大小', cfg.locked, v => cfg.locked = v, { type: 'checkbox' }),
+        field('游戏模式防误触', cfg.clickThroughInGame, v => cfg.clickThroughInGame = v, { type: 'checkbox' })
+      ));
+      form.appendChild(row(Object.assign(document.createElement('div'), {
+        className: 'petcfg-info',
+        textContent: '锁定时拖不动她、右下角的缩放手柄也会隐藏；游戏模式防误触 = 判定为“游戏中”时整只宠物鼠标穿透，点击直接落进游戏（要说话走托盘菜单）。'
+      })));
+
+      cfg.snap = cfg.snap || {};
+      form.appendChild(sec('屏幕边缘吸附'));
+      form.appendChild(row(
+        field('启用', cfg.snap.enabled, v => cfg.snap.enabled = v, { type: 'checkbox' }),
+        field('触发距离(px)', cfg.snap.threshold, v => cfg.snap.threshold = v, { type: 'number' }),
+        field('滑动动画', cfg.snap.animate, v => cfg.snap.animate = v, { type: 'checkbox' })
+      ));
+
+      cfg.bubble = cfg.bubble || {};
+      const b = cfg.bubble;
+      // 老配置里没有"段落间隔"这两个键 → 补默认值，免得面板显示空白、保存时写出 undefined
+      if (b.gapSeconds === undefined || b.gapSeconds === null) b.gapSeconds = 0.6;
+      if (b.gapSecondsPerChar === undefined || b.gapSecondsPerChar === null) b.gapSecondsPerChar = 0.03;
+      if (b.gapMaxSeconds === undefined || b.gapMaxSeconds === null) b.gapMaxSeconds = 0;
+      form.appendChild(sec('气泡'));
+      form.appendChild(row(
+        field('文字色', b.foreground, v => b.foreground = v),
+        field('背景', b.background, v => b.background = v),
+        field('边框', b.border, v => b.border = v)
+      ));
+      form.appendChild(row(
+        field('字体', b.fontFamily, v => b.fontFamily = v, { wide: true }),
+        field('字号', b.fontSize, v => b.fontSize = v, { type: 'number' }),
+        field('最大宽', b.maxWidth, v => b.maxWidth = v, { type: 'number' }),
+        field('圆角', b.cornerRadius, v => b.cornerRadius = v, { type: 'number' })
+      ));
+      form.appendChild(row(
+        field('保底秒数 m', b.baseSeconds, v => b.baseSeconds = v, { type: 'number', step: '0.5' }),
+        field('每字秒数 n', b.secondsPerChar, v => b.secondsPerChar = v, { type: 'number', step: '0.05' }),
+        field('最长秒数(0=不限)', b.maxSeconds, v => b.maxSeconds = v, { type: 'number' }),
+        field('逐字速度(字/秒, 0=关)', b.typeSpeed, v => b.typeSpeed = v, { type: 'number', step: '2' })
+      ));
+      form.appendChild(row(
+        field('段落间隔 g', b.gapSeconds, v => b.gapSeconds = v, { type: 'number', step: '0.1' }),
+        field('间隔每字 h', b.gapSecondsPerChar, v => b.gapSecondsPerChar = v, { type: 'number', step: '0.01' }),
+        field('最长间隔(0=不限)', b.gapMaxSeconds, v => b.gapMaxSeconds = v, { type: 'number' })
+      ));
+      form.appendChild(row(Object.assign(document.createElement('div'), {
+        className: 'petcfg-info',
+        textContent: '① 停留时长 = 保底 m + 字数 × n 秒（图片另保底 12 秒）。m ≤ 0 = 不自动消失，点一下才关。' +
+                     '当前默认 m=4、n=0.25：20 字左右约 9 秒，100 字约 29 秒。' +
+                     '② 多段输出时**每个气泡单独算自己的停留**，走完才出下一段（中途点掉算看完，立刻接下一段）；' +
+                     '两段之间再空一个间隔 = g + 上一段字数 × h（当前默认 g=0.6、h=0.03：20 字约 1.2 秒）。' +
+                     'g 和 h 都设 0 = 不留间隔（此时退回后端那栏的「回复间隔(ms)」）。'
+      })));
+
+      cfg.backend = cfg.backend || {};
+      const k = cfg.backend;
+      form.appendChild(sec('后端 / 心跳（地址与令牌是桌面端本机设置，这里改不了——改错了会连不上）'));
+      form.appendChild(row(
+        field('超时(秒)', k.timeoutSeconds, v => k.timeoutSeconds = v, { type: 'number' })
+      ));
+      form.appendChild(row(
+        field('回复间隔(ms)', k.replyGapMs, v => k.replyGapMs = v, { type: 'number' }),
+        field('轮询(ms)', k.inboxPollMs, v => k.inboxPollMs = v, { type: 'number' })
+      ));
+
+      cfg.actions = cfg.actions || {};
+      const SYSTEM_ACTIONS = ['idle', 'talk', 'thinking', 'startup', 'error'];
+      const SYSTEM_HINT = {
+        idle: '待机——没事干的时候',
+        talk: '说话中——气泡逐字出字期间循环播',
+        thinking: '等待中——主人发话到她开口之间循环播（工具绑定动作会插播，播完回它）',
+        startup: '登场——开机播一遍，播完自动进 idle',
+        error: '出错——后端连不上 / 回复失败时播（20 秒内不重复），提醒你她卡住了'
+      };
+      SYSTEM_ACTIONS.forEach(n => {
+        if (!cfg.actions[n]) cfg.actions[n] = { frames: [], fps: 4, loop: true, triggers: [], weight: 1, tools: [] };
+      });
+
+      form.appendChild(sec('动作帧（帧路径相对皮肤目录，逗号分隔；GIF 会自动按它自己的节奏播）'));
+      form.appendChild(row(Object.assign(document.createElement('div'), {
+        className: 'petcfg-info',
+        textContent: '★ = 系统动作：由程序按名字调用（idle 待机 / talk 说话 / thinking 等待），不能删除、也不参与触发词；其余动作可配「触发词 / 权重」，并在下方绑定工具。'
+      })));
+
+      const mkActRow = (name) => {
+        const a = cfg.actions[name];
+        const line = document.createElement('div'); line.className = 'petcfg-act';
+        const nm = document.createElement('span'); nm.className = 'petcfg-name';
+        const isSys = SYSTEM_ACTIONS.includes(name);
+        nm.textContent = (isSys ? '★ ' : '') + name;
+        if (isSys) nm.title = SYSTEM_HINT[name] || '';
+        const fr = document.createElement('input');
+        fr.value = (a.frames || []).join(', ');
+        fr.style.cssText = 'flex:1;min-width:240px;background:var(--bg3);border:1px solid var(--line);color:var(--tx);border-radius:6px;padding:4px 7px;font-size:12px';
+        fr.addEventListener('input', () => a.frames = fr.value.split(/[,，]+/).map(s=>s.trim()).filter(Boolean));
+        line.append(nm, fr,
+          field('fps', a.fps, v => a.fps = v, { type: 'number', step: '0.1' }),
+          field('循环', a.loop, v => a.loop = v, { type: 'checkbox' }));
+        if (isSys){
+          const lock = document.createElement('span'); lock.className = 'petcfg-info';
+          lock.textContent = '系统动作（不可删除）';
+          line.appendChild(lock);
+        } else {
+          const del = document.createElement('button'); del.className = 'btn-mini danger'; del.textContent = '删除';
+          del.addEventListener('click', () => { delete cfg.actions[name]; render(); });
+          line.appendChild(del);
+        }
+        form.appendChild(line);
+
+        if (isSys){
+          form.appendChild(row(Object.assign(document.createElement('div'), {
+            className: 'petcfg-info', textContent: '　' + (SYSTEM_HINT[name] || '')
+          })));
+        } else {
+          const l2 = document.createElement('div'); l2.className = 'petcfg-act';
+          const tg = document.createElement('input');
+          tg.value = (a.triggers || []).join(', ');
+          tg.placeholder = '触发词，逗号分隔（她说的话里出现它就播这个动作）';
+          tg.style.cssText = 'flex:1;min-width:280px;background:var(--bg3);border:1px solid var(--line);color:var(--tx);border-radius:6px;padding:4px 7px;font-size:12px';
+          tg.addEventListener('input', () => a.triggers = tg.value.split(/[,，]+/).map(s => s.trim()).filter(Boolean));
+          l2.append(tg, field('权重', a.weight ?? 1, v => a.weight = v, { type: 'number', step: '0.5' }));
+          const bound = (a.tools || []).length ? ('绑定的工具：' + a.tools.join('、')) : '还没绑定工具';
+          const bi = document.createElement('span'); bi.className = 'petcfg-info'; bi.textContent = bound;
+          l2.append(bi);
+          form.appendChild(l2);
+        }
+      };
+
+      SYSTEM_ACTIONS.filter(n => cfg.actions[n]).forEach(mkActRow);
+      Object.keys(cfg.actions).filter(n => !SYSTEM_ACTIONS.includes(n)).sort().forEach(mkActRow);
+
+      // 工具绑定：**一个工具只能绑一个动作**，所以这里按"工具"视角来配（选谁就绑到谁，重复选会自动解绑旧的）
+      form.appendChild(sec('工具绑定（她调用某个工具时就播对应动作帧；每个工具只能绑一个）'));
+      if (!toolNames.length){
+        form.appendChild(row(Object.assign(document.createElement('div'), {
+          className: 'petcfg-info', textContent: '没读到工具列表（后端 /api/tools 读失败）——先刷新看看'
+        })));
+      } else {
+        const grid = document.createElement('div'); grid.className = 'petcfg-row';
+        const actionsNow = () => Object.keys(cfg.actions);
+        toolNames.forEach(t => {
+          const owner = actionsNow().find(n => (cfg.actions[n].tools || []).includes(t));
+          const f = document.createElement('label'); f.className = 'petcfg-f';
+          const sp = document.createElement('span');
+          sp.textContent = t; sp.style.cssText = 'min-width:150px;font-family:ui-monospace,Consolas,monospace';
+          const sel = document.createElement('select'); sel.className = 'petcfg-sel';
+          [{ v: '', t: '（不绑定）' }].concat(actionsNow().map(n => ({ v: n, t: n }))).forEach(o => {
+            const op = document.createElement('option'); op.value = o.v; op.textContent = o.t; sel.appendChild(op);
+          });
+          sel.value = owner || '';
+          sel.addEventListener('change', () => {
+            const pick = sel.value;
+            actionsNow().forEach(n => { cfg.actions[n].tools = (cfg.actions[n].tools || []).filter(x => x !== t); });
+            if (pick) cfg.actions[pick].tools = (cfg.actions[pick].tools || []).concat([t]);
+            render();
+          });
+          f.append(sp, sel); grid.appendChild(f);
+        });
+        form.appendChild(grid);
+      }
+
+      const addRow = document.createElement('div'); addRow.className = 'petcfg-act';
+      const nmIn = document.createElement('input'); nmIn.placeholder = '新动作名（英文，如 angry）';
+      nmIn.style.cssText = 'background:var(--bg3);border:1px solid var(--line);color:var(--tx);border-radius:6px;padding:4px 7px;font-size:12px;width:170px';
+      const frIn = document.createElement('input'); frIn.placeholder = '帧路径，逗号分隔（如 angry/1.gif 或 a.png, b.png）';
+      frIn.style.cssText = 'flex:1;min-width:240px;background:var(--bg3);border:1px solid var(--line);color:var(--tx);border-radius:6px;padding:4px 7px;font-size:12px';
+      const addBtn = document.createElement('button'); addBtn.className = 'btn-mini'; addBtn.textContent = '＋ 添加动作';
+      addBtn.addEventListener('click', () => {
+        const n = nmIn.value.trim();
+        if (!n) { toast('先填动作名', true); return; }
+        if (SYSTEM_ACTIONS.includes(n)) { toast(n + ' 是系统动作（程序调用），不能新建/覆盖', true); return; }
+        if (cfg.actions[n]) { toast('已经有同名动作了', true); return; }
+        cfg.actions[n] = { frames: frIn.value.split(/[,，]+/).map(s=>s.trim()).filter(Boolean), fps: 4, loop: true, triggers: [], weight: 1, tools: [] };
+        nmIn.value = ''; frIn.value = '';
+        render();
+      });
+      addRow.append(nmIn, frIn, addBtn);
+      form.appendChild(addRow);
+    }
+
+    async function load(){
+      info.textContent = '加载中…';
+      try{
+        const r = await api('/api/pet/config');
+        cfg = r.config || DEFAULTS();
+        if (!toolNames.length) await fetchTools();
+        render();
+        info.textContent = (r.hasConfig ? ('后端配置 v' + r.version) : '还没存过后台配置，下面是默认值') + '　桌面端每 3 秒自动套用' +
+          (toolNames.length ? ('　工具 ' + toolNames.length + ' 个') : '');
+      }catch(e){ info.textContent = '读取失败：' + e.message; toast('读取精灵配置失败：' + e.message, true); }
+    }
+
+    btnReload.addEventListener('click', load);
+    btnDefault.addEventListener('click', () => { cfg = DEFAULTS(); render(); toast('已填入默认值（还没保存）'); });
+    btnSave.addEventListener('click', async () => {
+      btnSave.textContent = '保存中…';
+      try{
+        const r = await api('/api/pet/config', { method: 'PUT', body: JSON.stringify(cfg) });
+        // 后端会把"系统动作被删 / 工具重复绑定"这类问题修正掉并回传说明
+        if (r.warnings && r.warnings.length) toast('已保存（v' + r.version + '），但做了修正：' + r.warnings.join('；'), true);
+        else toast('已保存（v' + r.version + '），桌面端几秒内自动套用');
+        await load();
+      }catch(e){ toast('保存失败：' + e.message, true); }
+      finally{ btnSave.textContent = '保存精灵配置'; }
+    });
+
+    load();
+    right.insertBefore(wrap, tag);
+  } else if (it.type === 'wflist'){
+    // 工作流管理：读取工作流目录 → 为每个流写说明（会告诉静静，她据此自选）+ 设默认流 + 各流注入节点 ID
+    const wrap = document.createElement('div');
+    wrap.className = 'wf-manager';
+    const bar = document.createElement('div');
+    bar.className = 'wf-bar';
+    const info = document.createElement('span');
+    info.className = 'wf-info'; info.textContent = '加载中…';
+    const btnReload = document.createElement('button');
+    btnReload.className = 'btn-mini'; btnReload.textContent = '刷新列表';
+    const btnSave = document.createElement('button');
+    btnSave.className = 'btn-mini'; btnSave.textContent = '保存工作流设置';
+    bar.appendChild(btnReload); bar.appendChild(btnSave); bar.appendChild(info);
+    const list = document.createElement('div');
+    list.className = 'wf-list';
+    wrap.appendChild(bar); wrap.appendChild(list);
+
+    let cache = null;                       // 当前列表数据（保存时回写）
+    const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+
+    async function load(){
+      info.textContent = '加载中…';
+      try{
+        cache = await api('/api/comfyui/workflows');
+        list.innerHTML = '';
+        const flows = cache.flows || [];
+        if (!flows.length){
+          list.innerHTML = '<div class="placeholder">目录里没有工作流 json：' + esc(cache.dir) + '</div>';
+          info.textContent = '';
+          return;
+        }
+        flows.forEach(f => {
+          const card = document.createElement('div');
+          card.className = 'wf-card';
+          card.dataset.file = f.file;
+          card.innerHTML =
+            '<div class="wf-head">' +
+              '<label class="wf-def"><input type="radio" name="wf-default" ' + (f.isDefault ? 'checked' : '') + '> 默认</label>' +
+              '<b>' + esc(f.file) + '</b>' +
+              '<span class="wf-meta">' + f.nodeCount + ' 节点 · ' + Math.round(f.size/1024) + 'KB · ' + esc(f.modifiedAt) + '</span>' +
+            '</div>' +
+            '<textarea class="wf-desc" rows="2" placeholder="这个流用来画什么？（例如：日常向、NSFW、线稿风…写清楚静静才会挑对）">' + esc(f.desc) + '</textarea>' +
+            '<div class="wf-nodes">' +
+              '注入节点 <input class="wf-in wf-pos" value="' + esc(f.positiveNodeId) + '" placeholder="留空=全局 ' + esc(cache.globalPositiveNodeId) + '">' +
+              '字段 <input class="wf-in wf-key" value="' + esc(f.positiveValueKey) + '" placeholder="' + esc(cache.globalPositiveValueKey) + '">' +
+              '保存节点 <input class="wf-in wf-save" value="' + esc(f.saveImageNodeId) + '" placeholder="' + esc(cache.globalSaveImageNodeId) + '">' +
+              '<button class="btn-mini wf-read">读取节点</button>' +
+              '<button class="btn-mini wf-test">测试注入</button>' +
+              '<select class="btn-mini wf-sel" style="display:none"><option value="">选择节点…</option></select>' +
+            '</div>';
+
+          const posIn = card.querySelector('.wf-pos'), keyIn = card.querySelector('.wf-key');
+          const sel = card.querySelector('.wf-sel');
+          card.querySelector('.wf-read').addEventListener('click', async () => {
+            try{
+              const r = await api('/api/comfyui/nodes?file=' + encodeURIComponent(f.file));
+              if (r.error){ toast('读取失败：' + r.error, true); return; }
+              const nodes = r.nodes || [];
+              sel.innerHTML = '<option value="">选择节点（共 ' + nodes.length + ' 个）…</option>' + nodes.map(n => {
+                const fd = (n.fields || []).find(x => x.kind === 'text');
+                const name = [n.id, n.class, n.title].filter(Boolean).join(' · ');
+                return `<option value="${n.id}" data-field="${fd ? fd.key : ''}">${(name + (fd ? '　【字段 ' + fd.key + '】' : '')).replace(/"/g,'&quot;')}</option>`;
+              }).join('');
+              sel.style.display = ''; sel.focus();
+              toast('已读取 ' + nodes.length + ' 个节点：选一个作为「' + f.file + '」的注入点');
+            }catch(e){ toast('读取失败：' + e.message, true); }
+          });
+          sel.addEventListener('change', () => {
+            if (!sel.value) return;
+            posIn.value = sel.value;
+            const fd = sel.selectedOptions[0]?.dataset.field;
+            if (fd) keyIn.value = fd;
+            toast('已选节点 ' + sel.value + (fd ? '（字段 ' + fd + '）' : ''));
+          });
+          card.querySelector('.wf-test').addEventListener('click', async () => {
+            const btn = card.querySelector('.wf-test');
+            btn.textContent = '测试中…';
+            try{
+              const r = await api('/api/comfyui/workflows/test', { method: 'POST',
+                body: JSON.stringify({ file: f.file, positiveNodeId: posIn.value, positiveValueKey: keyIn.value }) });
+              toast(r.ok ? r.message : ('注入失败：' + (r.error || r.message || '未知原因')), !r.ok);
+            }catch(e){ toast('测试失败：' + e.message, true); }
+            finally{ btn.textContent = '测试注入'; }
+          });
+          list.appendChild(card);
+        });
+        info.textContent = '共 ' + flows.length + ' 个流 · ' + cache.dir;
+      }catch(e){ list.innerHTML = '<div class="placeholder">加载工作流失败：' + esc(e.message) + '</div>'; }
+    }
+
+    btnReload.addEventListener('click', load);
+    btnSave.addEventListener('click', async () => {
+      if (!cache){ toast('还没加载完', true); return; }
+      const flows = {};
+      list.querySelectorAll('.wf-card').forEach(card => {
+        flows[card.dataset.file] = {
+          desc: card.querySelector('.wf-desc').value.trim(),
+          positiveNodeId: card.querySelector('.wf-pos').value.trim(),
+          positiveValueKey: card.querySelector('.wf-key').value.trim(),
+          saveImageNodeId: card.querySelector('.wf-save').value.trim(),
+        };
+      });
+      const def = list.querySelector('input[name="wf-default"]:checked')?.closest('.wf-card')?.dataset.file || '';
+      btnSave.textContent = '保存中…';
+      try{
+        const r = await api('/api/comfyui/workflows', { method: 'PUT', body: JSON.stringify({ default: def, flows }) });
+        toast('已保存 ' + r.saved + ' 个流的设置（默认：' + (r.default || '—') + '）');
+        await load();
+      }catch(e){ toast('保存失败：' + e.message, true); }
+      finally{ btnSave.textContent = '保存工作流设置'; }
+    });
+
+    load();
+    right.insertBefore(wrap, tag);
   } else if (it.type === 'text'){
     // 多行文本：textarea 自增长（高度随内容）+ 超宽自动换行（行布局为纵向：标签在上、文本框在下）
     const ta = document.createElement('textarea');
@@ -1107,8 +1662,8 @@ function buildItemRow(it, group){
     input.type = it.type === 'int' || it.type === 'double' ? 'number' : 'text';
     if (it.type === 'double') input.step = '0.1';
     input.value = it.value ?? '';
-    // 记录 BaseUrl/ApiKey 输入框引用（获取模型列表时读当前填写值）
-    if (it.path.endsWith('BaseUrl') || it.path.endsWith('ApiKey')) it._input = input;
+    // 记录 BaseUrl/ApiKey 输入框引用（获取模型列表时读当前填写值）；PositiveValueKey 供选节点时自动带出字段名
+    if (it.path.endsWith('BaseUrl') || it.path.endsWith('ApiKey') || it.path.endsWith('PositiveValueKey')) it._input = input;
     input.addEventListener('change', () => {
       let val;
       if (it.type === 'int'){ val = parseInt(input.value, 10); if (isNaN(val)){ toast('请输入数字', true); return; } }
@@ -1172,14 +1727,36 @@ function buildGroup(g){
   return grp;
 }
 
+// 这个页签装的是"跟桌面有关"的配置组：桌面精灵本体 + 她的截屏（看到你在做什么）
+const DESKTOP_TAB_GROUPS = ['pet', 'screen'];
+
+// 桌面精灵的配置单独占一个页签（东西多，塞在开关页里太乱）
+let petRendered = false;
+
 async function loadSwitches(){
   const el = document.getElementById('switches');
   try{
     groupsCache = await api('/api/config/switches');
-    pending.clear();
+    // 注意：**不清 pending**——两个页签共用一份待保存状态，来回切页签不该把没保存的改动吞掉
     el.innerHTML = '';
-    groupsCache.forEach(g => el.appendChild(buildGroup(g)));
+    groupsCache.filter(g => !DESKTOP_TAB_GROUPS.includes(g.id)).forEach(g => el.appendChild(buildGroup(g)));
+    if (petRendered) renderPetGroups();   // 数据刷新后同步重建精灵页
   }catch(e){ el.innerHTML = '<div class="placeholder">加载开关失败：' + e.message + '</div>'; }
+}
+
+function renderPetGroups(){
+  const el = document.getElementById('pet-groups');
+  if (!el) return;
+  // 按 DESKTOP_TAB_GROUPS 的顺序排列（后端分组顺序随代码声明，这里显式排一下更好看）
+  const groups = DESKTOP_TAB_GROUPS.map(id => (groupsCache || []).find(g => g.id === id)).filter(Boolean);
+  el.innerHTML = groups.length ? '' : '<div class="placeholder">没有找到桌面相关的配置组</div>';
+  groups.forEach(g => el.appendChild(buildGroup(g)));
+  petRendered = true;
+}
+
+async function loadPetTab(){
+  if (!groupsCache.length) await loadSwitches();   // 第一次进来先把配置拉回来
+  renderPetGroups();
 }
 
 async function saveAll(){
@@ -1196,12 +1773,59 @@ async function saveAll(){
 
 function revertAll(){
   if (pending.size === 0){ toast('没有待撤回的改动'); return; }
+  pending.clear();
   loadSwitches();
+  if (petRendered) renderPetGroups();
   toast('已撤回全部未保存改动');
+}
+
+// ---- 活动模式小卡片（游戏/一般/看家） ----
+let mcTimer = null;
+async function loadModeCard(refresh){
+  try{
+    const r = await api('/api/activity/status' + (refresh ? '?refresh=1' : ''));
+    if (!r.ok){ document.getElementById('mc-sum').textContent = '读取失败：' + (r.error || '?'); return; }
+    const badge = document.getElementById('mc-badge');
+    badge.textContent = '当前：' + r.modeText + '模式';
+    badge.className = 'mc-badge ' + r.mode;
+    document.getElementById('mc-sum').textContent = r.summary;
+    const gpu = (r.foregroundGpu > 0 || r.totalGpu > 0)
+      ? `　GPU 前台 ${r.foregroundGpu}% / 全机 ${r.totalGpu}%` : '';
+    document.getElementById('mc-line').textContent =
+      `键鼠静默 ${r.idleSeconds} 秒　前台进程 ${r.foregroundProcess || '?'}${gpu}` +
+      `　全屏 ${r.foregroundFullscreen ? '是' : '否'}　鼠标锁定 ${r.mouseClipped ? '是' : '否'}` +
+      (r.steamAppId ? `　Steam AppID ${r.steamAppId}` : '');
+    document.getElementById('mc-reason').textContent = `判定：${r.reason}（评分 ${r.score}）`;
+    document.getElementById('mc-meta').textContent =
+      `采样 ${r.sampledAt || '还没采过'}（每 ${r.pollSeconds} 秒一次）　节奏：游戏 ${r.gameIntervalMinutes} 分钟 / 看家 ${r.awayIntervalMinutes} 分钟`;
+  }catch(e){
+    document.getElementById('mc-sum').textContent = '读取失败：' + e.message;
+  }
+}
+document.getElementById('mc-refresh').addEventListener('click', () => loadModeCard(true));
+document.getElementById('mc-force').addEventListener('change', async (e) => {
+  const v = e.target.value;
+  try{
+    await api('/api/config/switches', { method: 'PUT', body: JSON.stringify([{ path: 'Bot.Activity.ForceMode', value: v }]) });
+    toast(v === 'auto' ? '已切回自动判定' : ('已锁定：' + v));
+    await loadModeCard(true);
+  }catch(err){ toast('保存失败：' + err.message, true); }
+});
+async function mcEnsure(){
+  // 卡片随开关页出现/隐藏：可见时每 15 秒刷新一次
+  const page = document.getElementById('page-switches');
+  if (page && page.classList.contains('active')){
+    await loadModeCard();
+    if (!mcTimer) mcTimer = setInterval(loadModeCard, 15000);
+  } else if (mcTimer){
+    clearInterval(mcTimer); mcTimer = null;
+  }
 }
 
 document.getElementById('save-all').addEventListener('click', saveAll);
 document.getElementById('revert-all').addEventListener('click', revertAll);
+document.getElementById('save-pet').addEventListener('click', saveAll);
+document.getElementById('revert-pet').addEventListener('click', revertAll);
 
 // ---- 提示词页 ----
 let promptPending = new Map();
@@ -1351,17 +1975,31 @@ function buildToolRow(t){
   right.insertBefore(toggle, tag);
 
   // 客人可用开关（GuestAllowed 白名单）：开=客人对话时也提供该工具；主人始终可用全部
+  // ownerOnly 工具（如截图）对客人恒不可用——开关锁死，只能主人用
   const gToggle = document.createElement('div');
   gToggle.className = 'toggle sm' + (t.guestAllowed ? ' on' : '');
   gToggle.dataset.value = String(t.guestAllowed);
-  gToggle.title = '客人对话时是否提供该工具（主人始终可用）';
-  gToggle.addEventListener('click', () => {
-    const nextOn = gToggle.dataset.value !== 'true';
-    gToggle.classList.toggle('on', nextOn);
-    gToggle.dataset.value = String(nextOn);
-    toolPending.set(t.name + ':guest', nextOn);
-    row.classList.add('dirty');
-  });
+  if (t.ownerOnly){
+    gToggle.style.opacity = '0.35';
+    gToggle.style.pointerEvents = 'none';
+    gToggle.title = '仅主人可用：客人永远拿不到这个工具（不受白名单影响）';
+  } else {
+    gToggle.title = '客人对话时是否提供该工具（主人始终可用）';
+    gToggle.addEventListener('click', () => {
+      const nextOn = gToggle.dataset.value !== 'true';
+      gToggle.classList.toggle('on', nextOn);
+      gToggle.dataset.value = String(nextOn);
+      toolPending.set(t.name + ':guest', nextOn);
+      row.classList.add('dirty');
+    });
+  }
+  if (t.ownerOnly){
+    const badge = document.createElement('span');
+    badge.className = 'pending-tag';
+    badge.style.cssText = 'background:#3a2a55;color:#c9a6ff';
+    badge.textContent = '仅主人';
+    right.insertBefore(badge, tag);
+  }
 
   // 描述 textarea：初始=当前生效描述；与默认一致保存时清空覆盖
   const ta = document.createElement('textarea');
@@ -1882,7 +2520,8 @@ document.querySelectorAll('nav a').forEach(a => {
     a.classList.add('active');
     document.getElementById('page-' + a.dataset.page).classList.add('active');
     if (a.dataset.page === 'stats') loadStats();
-    if (a.dataset.page === 'switches') loadSwitches();
+    if (a.dataset.page === 'switches') { loadSwitches(); loadModeCard(); mcEnsure(); }
+    if (a.dataset.page === 'pet') loadPetTab();
     if (a.dataset.page === 'prompts') loadPrompts();
     if (a.dataset.page === 'tools') loadTools();
     if (a.dataset.page === 'groups') loadGroups();

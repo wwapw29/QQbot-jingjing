@@ -46,7 +46,8 @@ public sealed class ToolRegistry
         foreach (var tool in _tools.Values)
         {
             if (IsDisabled(tool.Name)) continue;
-            if (forGuest && !IsGuestAllowed(tool.Name)) continue;
+            // 仅主人可用的工具（截图等）对客人一律不出现，白名单也放不出来
+            if (forGuest && (tool.OwnerOnly || !IsGuestAllowed(tool.Name))) continue;
             var desc = tool.Description;
             if (_options.Descriptions?.TryGetValue(tool.Name, out var custom) == true && !string.IsNullOrWhiteSpace(custom))
             {
@@ -79,8 +80,9 @@ public sealed class ToolRegistry
             _logger.LogWarning("工具 {Name} 已被禁用，拒绝执行", name);
             return null;
         }
-        // 防御：客人会话禁止调用未对其开放的工具（即使 LLM 幻觉/被注入硬调用）
-        if (!ctx.Message.IsOwner && !IsGuestAllowed(name))
+        // 防御：客人会话禁止调用未对其开放的工具（即使 LLM 幻觉/被注入硬调用）；
+        // OwnerOnly 工具（截图等）对客人是硬拒绝，白名单配置也放不出来
+        if (!ctx.Message.IsOwner && (tool.OwnerOnly || !IsGuestAllowed(name)))
         {
             _logger.LogWarning("工具 {Name} 未对客人开放，拒绝执行（uid={Uid}）", name, ctx.Message.UserId);
             return $"工具 {name} 当前不可用。";
@@ -89,6 +91,11 @@ public sealed class ToolRegistry
         {
             var result = await tool.ExecuteAsync(argsJson, ctx, ct);
             _logger.LogInformation("工具 {Name} 执行完成：{Result}", name, result[..Math.Min(result.Length, 200)]);
+
+            // 桌面精灵会话：记一笔"她刚调了什么工具"，桌面端据此播绑定的动作帧（见 PetActionHint）
+            if (ctx.Message.SessionKey.StartsWith("pet:", StringComparison.OrdinalIgnoreCase))
+                QQBot.Core.Pet.PetActionHint.NoteToolCall(name);
+
             return result;
         }
         catch (Exception ex)

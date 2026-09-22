@@ -889,7 +889,12 @@ public sealed class Database
         }
     }
 
-    /// <summary>列出记忆（供查看命令使用）：includeGlobal=true 时同时列出通用记忆</summary>
+    /// <summary>
+    /// 列出记忆（供查看命令使用）：includeGlobal=true 时同时列出通用记忆。
+    /// ⚠️ 注意：includeGlobal=true 的实现是"不加任何 WHERE"（会捞出**所有用户/所有群**的记忆），
+    /// 不是"该用户 + 通用"。**对话链路请勿使用**——search_memory 已改用
+    /// <see cref="SearchScopedMemories"/>（范围受限 + 带总数）。
+    /// </summary>
     public List<MemoryRecord> LoadMemories(long? qqId, int limit, bool includeGlobal)
     {
         var result = new List<MemoryRecord>();
@@ -913,6 +918,55 @@ public sealed class Database
             _logger.LogError(ex, "加载记忆列表失败");
         }
         return result;
+    }
+
+    /// <summary>
+    /// 检索 / 盘点记忆（供 search_memory 工具使用）：范围与 <see cref="ScopeMatches"/> 一致——
+    /// 通用(global) + 该用户自己的(user) + 该群的(group，含群里归属该用户的)。
+    /// ⚠️ **不跨用户泄漏**：旧的 <c>LoadMemories(..., includeGlobal: true)</c> 会退化成"查全表"
+    /// （把所有用户/所有群的记忆都捞出来），工具已改用本方法。
+    /// keyword 为空 = **盘点模式**：列出该范围内的记忆清单，供静静发现自己记漏/记错/过时的。
+    /// 同时返回该范围内**总条数**——她得知道自己记忆的全貌，才谈得上"知道哪些没有"。
+    /// </summary>
+    public (List<MemoryRecord> Items, int Total) SearchScopedMemories(long? qqId, long? groupId, string? keyword, int limit)
+    {
+        var items = new List<MemoryRecord>();
+        var total = 0;
+        try
+        {
+            using var conn = Open();
+            const string scopeWhere =
+                """
+                (scope = 'global'
+                 OR (scope = 'user' AND qq_id = $qq)
+                 OR (scope = 'group' AND group_id = $gid AND (qq_id IS NULL OR qq_id = $qq)))
+                """;
+
+            using (var countCmd = conn.CreateCommand())
+            {
+                countCmd.CommandText = $"SELECT COUNT(*) FROM Memories WHERE {scopeWhere};";
+                countCmd.Parameters.AddWithValue("$qq", (object?)qqId ?? DBNull.Value);
+                countCmd.Parameters.AddWithValue("$gid", (object?)groupId ?? DBNull.Value);
+                total = Convert.ToInt32(countCmd.ExecuteScalar() ?? 0);
+            }
+
+            var kw = string.IsNullOrWhiteSpace(keyword) ? null : keyword.Trim();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = $"SELECT {MemCols} FROM Memories WHERE {scopeWhere}"
+                + (kw is null ? "" : " AND (content LIKE $kw OR trigger LIKE $kw)")
+                + " ORDER BY importance DESC, updated_at DESC LIMIT $lim;";
+            cmd.Parameters.AddWithValue("$qq", (object?)qqId ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$gid", (object?)groupId ?? DBNull.Value);
+            if (kw is not null) cmd.Parameters.AddWithValue("$kw", $"%{kw}%");
+            cmd.Parameters.AddWithValue("$lim", Math.Max(1, limit));
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read()) items.Add(ReadMemory(reader));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "检索记忆失败");
+        }
+        return (items, total);
     }
 
     /// <summary>按 scope/归属查询记忆（供查看命令用）：scope=null 全部；qqId=null 不限制归属</summary>

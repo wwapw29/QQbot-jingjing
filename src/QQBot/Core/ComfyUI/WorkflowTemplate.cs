@@ -29,7 +29,8 @@ public sealed class WorkflowTemplate
 
         if (!clone.TryGetPropertyValue(_positiveNodeId, out var nodeObj) || nodeObj is not JsonObject node)
         {
-            throw new InvalidOperationException($"workflow 中不存在节点 {_positiveNodeId}");
+            throw new InvalidOperationException(
+                $"workflow 中不存在节点 {_positiveNodeId}（模板被重新导出后节点 ID 可能变了：请在后台「开关 → 生图(ComfyUI)」用「读取工作流节点」重选注入提示词组件 ID）");
         }
         var inputs = node["inputs"] as JsonObject
             ?? throw new InvalidOperationException($"节点 {_positiveNodeId} 缺少 inputs");

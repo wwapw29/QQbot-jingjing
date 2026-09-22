@@ -1,0 +1,54 @@
+<Window x:Class="DesktopPet.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="静静"
+        WindowStyle="None" AllowsTransparency="True" Background="Transparent"
+        ShowInTaskbar="False" ResizeMode="NoResize"
+        SizeToContent="WidthAndHeight" UseLayoutRounding="True"
+        MouseLeftButtonDown="OnPetMouseLeftDown"
+        MouseRightButtonUp="OnPetMouseRightUp"
+        MouseEnter="OnPetMouseEnter"
+        MouseLeave="OnPetMouseLeave">
+
+    <!-- 透明无边框窗：只画出 PNG 本身；Margin 留出"呼吸"浮动与描边的余量 -->
+    <Grid>
+        <Image x:Name="PetImage" Margin="10" Stretch="Uniform"
+               RenderOptions.BitmapScalingMode="HighQuality">
+            <Image.RenderTransform>
+                <TranslateTransform x:Name="BreathOffset" />
+            </Image.RenderTransform>
+        </Image>
+
+        <!-- 右下角缩放手柄：鼠标移到她身上才显形；拖动按比例缩放（只改 Scale，宽高天然同比例）。
+             锁定位置和大小时会被藏起来。
+
+             ⚠ 底必须是 #01000000，不能写 Transparent：
+             窗口是 AllowsTransparency，Windows 对分层窗口是**按像素 alpha 判定命中**的——
+             alpha=0 的像素鼠标直接穿透给后面的窗口。而手柄就压在她右下角，
+             角色素材那个角落本来就是空的（alpha=0），于是"看得见手柄却摸不到"，
+             鼠标一路穿透出去 → 窗口收到 MouseLeave → 手柄被打回隐形。
+             刷成 alpha=1：肉眼完全看不见，但已经不算全透明，能被稳定命中。
+             同理 Thumb 自己的 Opacity 不能用来做显隐（0 = 全透明 = 又摸不到了），
+             所以显隐切的是里面那层 GripArt。 -->
+        <Thumb x:Name="ResizeGrip" Width="30" Height="30" Margin="0,0,8,8"
+               HorizontalAlignment="Right" VerticalAlignment="Bottom"
+               Cursor="SizeNWSE"
+               DragStarted="OnResizeStarted"
+               DragDelta="OnResizeDrag"
+               DragCompleted="OnResizeCompleted">
+            <Thumb.Template>
+                <ControlTemplate TargetType="Thumb">
+                    <!-- 30x30 是命中区（那层看不见的 alpha=1 底），箭头只画在右下角：
+                         又大又好点，看着仍然贴在角上 -->
+                    <Grid Background="#01000000">
+                        <Grid x:Name="GripArt" Opacity="0">
+                            <!-- 先描深色再叠白色：浅色和深色背景上都看得见 -->
+                            <Path Data="M 17,29 L 29,17 M 22,29 L 29,22" Stroke="#88000000" StrokeThickness="4" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                            <Path Data="M 17,29 L 29,17 M 22,29 L 29,22" Stroke="#F2FFFFFF" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" />
+                        </Grid>
+                    </Grid>
+                </ControlTemplate>
+            </Thumb.Template>
+        </Thumb>
+    </Grid>
+</Window>

@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>   <!-- 托盘图标用 WinForms 的 NotifyIcon，最省事 -->
+    <AssemblyName>DesktopPet</AssemblyName>
+    <RootNamespace>DesktopPet</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>0.1.0</Version>
+    <Product>静静桌面宠物</Product>
+    <Description>PNG 桌面宠物：透明置顶窗口 + 气泡对话（后端接 QQBot 的静静）</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- UseWindowsForms 会顺带 global using System.Windows.Forms / System.Drawing，
+         与 WPF 的 Application/Brush/MenuItem 等重名 → 这里去掉全局 using，
+         只在真正需要的地方（托盘图标）显式 using，避免满屏 CS0104 歧义。 -->
+    <Using Include="System.IO" />
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 素材与配置随程序输出（可换皮肤：换目录 + 改 pet.json 即可） -->
+    <Content Include="assets\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="pet.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

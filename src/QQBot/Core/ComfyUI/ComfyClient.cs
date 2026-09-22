@@ -64,10 +64,11 @@ public sealed class ComfyClient
 
     /// <summary>
     /// 轮询等待生成完成，返回输出图片信息列表（SaveImage 节点的 images）。
-    /// 超时返回 null。
+    /// saveNodeId：该工作流自己的保存节点 ID（空则用全局 ComfyUI.SaveImageNodeId）。超时返回 null。
     /// </summary>
-    public async Task<List<ComfyImage>?> WaitForResultAsync(string promptId, CancellationToken ct = default)
+    public async Task<List<ComfyImage>?> WaitForResultAsync(string promptId, CancellationToken ct = default, string? saveNodeId = null)
     {
+        var saveNode = string.IsNullOrWhiteSpace(saveNodeId) ? _options.SaveImageNodeId : saveNodeId;
         var deadline = DateTime.UtcNow.AddSeconds(_options.TimeoutSeconds);
         while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
         {
@@ -83,9 +84,9 @@ public sealed class ComfyClient
                     {
                         var images = new List<ComfyImage>();
                         var outputs = entry["outputs"] as JsonObject;
-                        if (outputs is not null && !string.IsNullOrEmpty(_options.SaveImageNodeId))
+                        if (outputs is not null && !string.IsNullOrEmpty(saveNode))
                         {
-                            var arr = outputs[_options.SaveImageNodeId]?["images"] as JsonArray;
+                            var arr = outputs[saveNode]?["images"] as JsonArray;
                             if (arr is not null)
                             {
                                 foreach (var img in arr.OfType<JsonObject>())
@@ -99,7 +100,7 @@ public sealed class ComfyClient
                         }
                         if (images.Count == 0)
                         {
-                            _logger.LogWarning("ComfyUI 成功但未找到节点 {Node} 的输出图片", _options.SaveImageNodeId);
+                            _logger.LogWarning("ComfyUI 成功但未找到节点 {Node} 的输出图片", saveNode);
                         }
                         return images;
                     }

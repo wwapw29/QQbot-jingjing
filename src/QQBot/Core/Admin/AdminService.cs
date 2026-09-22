@@ -27,6 +27,11 @@ public sealed class AdminService : IHostedService
     private readonly OneBotClient _client;
     private readonly ToolRegistry _tools;
     private readonly CommandRouter _router;
+    private readonly QQBot.Core.ComfyUI.WorkflowRegistry _workflows;
+    private readonly QQBot.Core.Dispatcher.EventDispatcher _dispatcher;
+    private readonly QQBot.Core.Pet.PetBridge _petBridge;
+    private readonly QQBot.Core.Pet.PetConfigStore _petConfig;
+    private readonly QQBot.Core.Hosted.ActivityMonitorService _activity;
     private readonly ILogger<AdminService> _logger;
     private readonly DateTime _startTime = DateTime.Now;   // 实例字段：DI 创建（程序启动）时初始化
     private readonly HttpClient _evalHttp = new() { Timeout = TimeSpan.FromSeconds(90) };
@@ -35,8 +40,19 @@ public sealed class AdminService : IHostedService
     private CancellationTokenSource? _cts;
 
     public AdminService(BotOptions options, Database db, IConfiguration config, OneBotClient client,
-                        ToolRegistry tools, CommandRouter router, ILogger<AdminService> logger)
+                        ToolRegistry tools, CommandRouter router,
+                        QQBot.Core.ComfyUI.WorkflowRegistry workflows,
+                        QQBot.Core.Dispatcher.EventDispatcher dispatcher,
+                        QQBot.Core.Pet.PetBridge petBridge,
+                        QQBot.Core.Pet.PetConfigStore petConfig,
+                        QQBot.Core.Hosted.ActivityMonitorService activity,
+                        ILogger<AdminService> logger)
     {
+        _activity = activity;
+        _workflows = workflows;
+        _dispatcher = dispatcher;
+        _petBridge = petBridge;
+        _petConfig = petConfig;
         _options = options;
         _db = db;
         _config = config;
@@ -97,6 +113,17 @@ public sealed class AdminService : IHostedService
             new CfgItem(["Planning", "Visible"], "规划可见", "把规划内容也发给用户看（调试用）", "bool"),
             new CfgItem(["Planning", "MaxChars"], "规划长度上限", "超过截断", "int"),
         ]),
+        new("burnToken", "烧token模式", "回复前让她自己反复调工具收集信息，调 ready_to_reply 之后才开始正文输出（开启后忽略旧规划轮/历史注入/记忆注入）",
+            ["BurnToken", "Enabled"],
+        [
+            new CfgItem(["BurnToken", "MaxRounds"], "收集轮上限", "最多让她自己查几轮（到上限=强制进入正式回复）。每轮=一次 LLM 往返，很烧 token", "int"),
+            new CfgItem(["BurnToken", "ScopePrivate"], "私聊启用", "含桌面精灵对话（走同一套入口）", "bool"),
+            new CfgItem(["BurnToken", "ScopeGroup"], "群聊启用", "群里**不看身份**：主人或群友说话都算（群友问「某某是谁」正是它最该顶上的场景）", "bool"),
+            new CfgItem(["BurnToken", "ScopeGuest"], "客人私聊启用", "**只管私聊**：客人的私聊是否也启用（默认关：未知客人发一句话就可能烧掉几十轮）。群聊请用上面那项", "bool"),
+            new CfgItem(["BurnToken", "SelfReview"], "正文后自评", "正文发出后再给她一轮自评 + 整理记忆（这一轮输出不发送给用户）", "bool"),
+            new CfgItem(["BurnToken", "SelfReviewMaxRounds"], "自评轮上限", "自评阶段最多几轮（她可能要调工具补/改记忆）", "int"),
+            new CfgItem(["BurnToken", "Prompt"], "收集阶段提示词", "本次操作建议模板；占位符 {Wake}/{UserText}/{Tools}/{UsedRounds}/{MaxRounds}；留空=内置默认", "text"),
+        ]),
         new("vision", "识图", "图片下载压缩后用识图模型识别并注入描述", ["Vision", "Enabled"],
         [
             new CfgItem(["Vision", "UseMainModel"], "使用主模型识图", "开=直接用主模型看图(忽略识图Model/BaseUrl/ApiKey，不带描述指令直接发图；测主模型视觉用，热更新)", "bool"),
@@ -107,10 +134,39 @@ public sealed class AdminService : IHostedService
             new CfgItem(["Vision", "JpegQuality"], "压缩质量", "1~100，保持原尺寸", "int"),
             new CfgItem(["Vision", "MaxImagesPerMessage"], "单条最多识图", "超出截断", "int"),
             new CfgItem(["Vision", "DescribePrompt"], "描述指令", "发给识图模型的提示（多行）", "text"),
+            new CfgItem(["Vision", "CacheDir"], "图片存档目录", "聊天图片压缩后存这里（默认在她个人空间 data/workspace/images，她可自己读取）", "string"),
+            new CfgItem(["Vision", "KeepDays"], "图片保留天数", "启动时清掉更早的图片；0=永久保留", "int"),
+            new CfgItem(["Vision", "SaveMetadata"], "转存图片元数据", "把原图的文本元数据（AI 出图参数 / EXIF 注释）抽成同名 .txt 存进她的空间并明确告诉她（压缩过的图不带元数据）", "bool"),
         ]),
-        new("auto", "自主活动", "空闲时静静自主行动", ["AutoActivity", "Enabled"],
+        new("screen", "屏幕截图", "capture_screen：让静静看一眼你的屏幕（**仅主人可用**，客人永远拿不到这个工具）", null,
         [
-            new CfgItem(["AutoActivity", "IntervalMinutes"], "触发间隔（分钟）", "空闲多久触发一次", "int"),
+            new CfgItem(["Tools", "ScreenCaptureMonitor"], "默认截取的屏幕", "0=所有屏幕拼成的整幅桌面；1/2…=第几块显示器。点右侧「读取屏幕」查看本机每块屏的编号与分辨率", "screenmon"),
+            new CfgItem(["Tools", "ScreenCaptureMaxWidth"], "图片最大宽度", "像素，等比缩放；越大越清晰也越费流量", "int"),
+        ]),
+        new("activity", "活动模式（游戏/一般/看家）", "监测主机活动（键鼠空闲 / 前台窗口 / GPU / 全屏 / Steam）→ 自动切换模式，自主活动跟着换节奏：游戏=勤陪玩、一般=照常、看家=打理自己并改用 QQ 联系", ["Activity", "Enabled"],
+        [
+            new CfgItem(["Activity", "PollSeconds"], "采样间隔（秒）", "多久检测一次主机状态（一轮约 4ms，别低于 5 秒）", "int"),
+            new CfgItem(["Activity", "ForceMode"], "手动锁定模式", "auto=自动判定；game/normal/away=锁定（测试或临时强制用）", "string"),
+            new CfgItem(["Activity", "GameIntervalMinutes"], "游戏模式间隔", "主人在打游戏时多久自主活动一次（分钟，陪玩要勤快）", "int"),
+            new CfgItem(["Activity", "AwayIntervalMinutes"], "看家模式间隔", "主人不在电脑前时多久活动一次（分钟，别太频繁）", "int"),
+            new CfgItem(["Activity", "AwayAfterMinutes"], "多久算「不在」", "键鼠静默超过这么多分钟就算主人离开了电脑（分钟）", "int"),
+            new CfgItem(["Activity", "GameGpuThreshold"], "GPU 判定阈值", "前台/全机 GPU 占用超过它就算\"在跑重图形\"（游戏判定的强信号，%）", "int"),
+            new CfgItem(["Activity", "GameAutoScreenshot"], "游戏模式自动截屏", "关=程序不替她截屏，让她自己按需调 capture_screen（默认关；开着则不经过工具通道、桌面不会有挂靠动画）", "bool"),
+            new CfgItem(["Activity", "GameScreenshotMaxWidth"], "自动截屏宽度", "像素，等比缩放", "int"),
+            new CfgItem(["Activity", "GameDisableGroupChat"], "游戏模式关闭群巡视", "打游戏时别让她分心去群里插嘴", "bool"),
+            new CfgItem(["Activity", "GamePrompt"], "游戏模式专属提示词", "陪玩时用的提示词（默认已填内置那份：说要自己截图、要每次都说一句、别提喝水）。随便改；清空=回退到代码里的内置版", "text"),
+            new CfgItem(["Activity", "GameTools"], "游戏模式可用工具", "逗号分隔的白名单；默认 send_private_to_owner,get_time,capture_screen（截屏下放给她自己用）。留空=不限制", "string"),
+            new CfgItem(["Activity", "GameMemoryPath"], "游戏模式记忆文件", "专属小本子（在她的小空间里，不在组里也可以直接看文件）：只记一两句，追加式更新", "string"),
+            new CfgItem(["Activity", "GameMemoryMaxChars"], "游戏记忆注入上限（字）", "注入时从最新内容往前取这么多字（0=不限）。文档会越写越长，靠它封顶", "int"),
+            new CfgItem(["Activity", "GameMemoryAppendMaxChars"], "单次追加字数上限", "逼她简练：一次活动最多往小本子里添这么多字（默认 200）", "int"),
+            new CfgItem(["Activity", "GameMaxToolRounds"], "游戏模式轮数上限", "单次活动最多几次工具调用（默认 4，别让她在工具里空转）", "int"),
+            new CfgItem(["Activity", "GameInjectMemory"], "游戏模式注入记忆/聊天/群", "关=不塞记忆库、主人聊天、群状态（默认关，陪玩用不上）", "bool"),
+            new CfgItem(["Activity", "GameInjectLongMemory"], "游戏模式注入长期记忆档案", "关=不把两万多字的档案整份交给她（默认关，这是最大的输入 token）", "bool"),
+            new CfgItem(["Activity", "GameMemoryRound"], "游戏模式跑记忆轮", "开着也便宜：现在是**追加**一两句到游戏记忆文件，不重写整份档案（默认开）", "bool"),
+        ]),
+        new("auto", "自主活动", "空闲时静静自主行动（间隔随上面的「活动模式」变化）", ["AutoActivity", "Enabled"],
+        [
+            new CfgItem(["AutoActivity", "IntervalMinutes"], "一般模式间隔（分钟）", "主人在电脑前干别的时，空闲多久触发一次", "int"),
             new CfgItem(["AutoActivity", "MaxGroups"], "遍历群数上限", "自主活动最多看几个群", "int"),
             new CfgItem(["AutoActivity", "RecentMessagesPerGroup"], "每群看几条", "拉取最近消息数", "int"),
             new CfgItem(["AutoActivity", "MaxToolRounds"], "工具轮上限", "自主活动工具调用轮数上限", "int"),
@@ -118,8 +174,17 @@ public sealed class AdminService : IHostedService
             new CfgItem(["AutoActivity", "AllowGroupChat"], "允许群聊发言", "自主时在群里说话", "bool"),
             new CfgItem(["AutoActivity", "AllowShell"], "允许执行命令", "自主时可用 run_shell", "bool"),
             new CfgItem(["AutoActivity", "AllowOrganizeMemory"], "允许整理记忆", "自主时整理记忆", "bool"),
-            new CfgItem(["AutoActivity", "MemoPath"], "备忘录路径", "相对运行目录", "string"),
-            new CfgItem(["AutoActivity", "MemoMaxChars"], "备忘录字数上限", "", "int"),
+            new CfgItem(["AutoActivity", "AllowScreenCapture"], "允许截屏", "自主时截屏看你屏幕在做什么（capture_screen，仅主人可用）", "bool"),
+            new CfgItem(["AutoActivity", "LongMemoryPath"], "长期记忆档案", "她自己维护的记忆 md（默认在她空间里）。每次自主活动第一轮全文交给她，活动结束更新一次；她也能自己 read_file / 改它", "string"),
+            new CfgItem(["AutoActivity", "LongMemoryMaxChars"], "档案字数上限", "0=不限长度（档案越全，她越不用自己去翻文件列表）", "int"),
+        ]),
+        new("pet", "桌面精灵（DesktopPet）", "桌上那只静静：接口开关 + 外观/气泡/吸附/动作。她通过 /api/pet/* 与她对话（同一套人设、记忆、工具——桌面上的她和 QQ 里是同一个她）", ["Pet", "Enabled"],
+        [
+            new CfgItem(["Pet", "SessionKey"], "宠物会话键", "默认 pet:{ownerId}（桌面是独立的一段对话）；改成 private:{ownerId} 则与 QQ 私聊共用同一段历史", "string"),
+            new CfgItem(["Pet", "TimeoutSeconds"], "对话超时（秒）", "她可能要规划/查记忆/调工具/生图，别设太短", "int"),
+            new CfgItem(["Pet", "MaxTextLength"], "单条输入上限", "字符数，超出截断", "int"),
+            new CfgItem(["Pet", "Config"], "精灵外观与行为", "桌面精灵（DesktopPet）的名字/皮肤/缩放/气泡/吸附/动作帧——保存后桌面端几秒内自动套用（无需重启）", "petcfg"),
+            new CfgItem(["Pet", "OfflineAfterSeconds"], "判定离线（秒）", "多久没收到桌面精灵心跳就当作\"人不在电脑前\"——她主动找你时会据此决定弹桌面气泡还是发 QQ", "int"),
         ]),
         new("shell", "命令执行", "run_shell 沙箱", ["Shell", "Enabled"],
         [
@@ -130,8 +195,14 @@ public sealed class AdminService : IHostedService
         new("comfy", "生图（ComfyUI）", "画图相关设置", null,
         [
             new CfgItem(["ComfyUI", "BaseUrl"], "ComfyUI 地址", "http://127.0.0.1:8188（热更新生效）", "string"),
+            new CfgItem(["ComfyUI", "WorkflowDir"], "工作流目录", "目录下所有 *.json 都是可选工作流（默认在静静个人空间 data/workspace/workflows）", "string"),
+            new CfgItem(["ComfyUI", "Workflows"], "工作流说明 / 默认流", "为每个流写说明（会告诉静静，她据此自选工作流），并可设默认流与各流的注入节点 ID", "wflist"),
+            new CfgItem(["ComfyUI", "PositiveNodeId"], "注入提示词组件 ID", "静静把正面提示词写进 workflow 的这个节点；点右侧「读取工作流节点」列出当前 workflow 节点并选择（热更新生效）", "wfnode"),
+            new CfgItem(["ComfyUI", "PositiveValueKey"], "注入字段名", "该节点里承载提示词的字段名（字符串节点=value，CLIP文本编码=text）", "string"),
             new CfgItem(["ComfyUI", "EnableEnhance"], "提示词扩写", "生图前用 LLM 扩写提示词", "bool"),
             new CfgItem(["ComfyUI", "SerializeImage"], "生图串行", "同一时刻只跑一个生图任务（防显存爆）", "bool"),
+            new CfgItem(["ComfyUI", "ImageDoneHint"], "生图完成提示", "生图成功后附在工具结果末尾的提示，防止 LLM 重复调用 generate_image 反复生图（留空=不附加，热更新生效）", "text"),
+            new CfgItem(["ComfyUI", "ShowOwnImageToSelf"], "生图后给静静看图", "生图完成后把刚画的图交给识图模型看一眼（需「识图」总开关为开），让她知道自己的作品长什么样", "bool"),
             new CfgItem(["ComfyUI", "Width"], "出图宽度", "", "int"),
             new CfgItem(["ComfyUI", "Height"], "出图高度", "", "int"),
             new CfgItem(["ComfyUI", "Steps"], "采样步数", "", "int"),
@@ -144,6 +215,7 @@ public sealed class AdminService : IHostedService
     /// <summary>基础提示词清单（提示词页专用：只含与功能无关的身份/场景人设与提取配置）</summary>
     private static readonly (string[] Path, string Label, string Desc, string Type)[] PromptDefs =
     [
+        (["Prompt", "PresencePrompt"], "存在形态（她 = QQ + 桌宠）", "让她知道 QQ 和桌面精灵都只是她伸出去的手，都是同一个她；两个通道都会注入", "text"),
         (["Prompt", "GlobalPrePrompt"], "全局前置人设", "每个场景都注入的身份/性格基调", "text"),
         (["Prompt", "GlobalPrePromptRole"], "全局前置角色", "user / system", "string"),
         (["Prompt", "GlobalPostPrompt"], "全局后置提示", "所有回复末尾附加的提示（如括号描述动作）", "text"),
@@ -261,6 +333,17 @@ public sealed class AdminService : IHostedService
                 return;
             }
             if (path == "/api/llm/models") { await HandleModelListAsync(ctx); return; }
+            if (path == "/api/activity/status") { await HandleActivityStatusAsync(ctx); return; }
+            if (path == "/api/screen/monitors") { await HandleScreenMonitorsAsync(ctx); return; }
+            if (path == "/api/pet/config") { await HandlePetConfigAsync(ctx); return; }
+            if (path == "/api/pet/ping") { await HandlePetPingAsync(ctx); return; }
+            if (path == "/api/pet/inbox") { await HandlePetInboxAsync(ctx); return; }
+            if (path == "/api/pet/presence") { await HandlePetPresenceAsync(ctx); return; }
+            if (path == "/api/pet/status") { await HandlePetStatusAsync(ctx); return; }
+            if (path == "/api/pet/chat") { await HandlePetChatAsync(ctx, ct); return; }
+            if (path == "/api/comfyui/nodes") { await HandleWorkflowNodesAsync(ctx); return; }
+            if (path == "/api/comfyui/workflows") { await HandleWorkflowsAsync(ctx); return; }
+            if (path == "/api/comfyui/workflows/test") { await HandleWorkflowTestAsync(ctx); return; }
             if (path == "/api/memories" || path.StartsWith("/api/memories/", StringComparison.OrdinalIgnoreCase))
             {
                 await HandleMemoriesAsync(ctx, path);
@@ -329,6 +412,13 @@ public sealed class AdminService : IHostedService
         };
         ctx.Response.ContentType = mime;
         ctx.Response.ContentLength64 = bytes.Length;
+        // HEAD 请求：只回头（含 Content-Length），不能写 body——否则 HttpListener 抛
+        // ProtocolViolationException("Bytes to be written ... exceed the Content-Length")
+        if (ctx.Request.HttpMethod == "HEAD")
+        {
+            ctx.Response.Close();
+            return;
+        }
         ctx.Response.OutputStream.Write(bytes);
         ctx.Response.Close();
     }
@@ -400,6 +490,39 @@ public sealed class AdminService : IHostedService
     }
 
     /// <summary>通用配置保存：写回 appsettings（保留注释）→ 同步 src → 热更新重绑定；WsUrl 变更触发重连</summary>
+    /// <summary>校验文本是不是合法 JSON（允许注释和尾逗号，与配置系统一致）</summary>
+    private static bool IsValidJson(string text, out string error)
+    {
+        try
+        {
+            using var _ = JsonDocument.Parse(text, new JsonDocumentOptions
+            {
+                CommentHandling = JsonCommentHandling.Skip,
+                AllowTrailingCommas = true,
+            });
+            error = "";
+            return true;
+        }
+        catch (Exception ex) { error = ex.Message; return false; }
+    }
+
+    /// <summary>
+    /// 原子写文件：先写同名 .tmp 再替换目标。
+    /// 配置系统在看守着 appsettings.json，非原子写（截断→写入）会让它读到半截内容，
+    /// 解析失败后内存配置会被清空——所以这里必须"要么旧内容、要么新内容"，不能有中间态。
+    /// </summary>
+    private static void WriteAtomic(string path, string content)
+    {
+        var tmp = path + ".tmp";
+        File.WriteAllText(tmp, content, Encoding.UTF8);
+        if (File.Exists(path)) File.Replace(tmp, path, null);
+        else File.Move(tmp, path);
+    }
+
+    /// <summary>配置是否读得回来（用必定存在的键做哨兵）。热重载读到半截文件时会整片为空</summary>
+    private bool ConfigLooksSane()
+        => !string.IsNullOrWhiteSpace(_config["Bot:Llm:BaseUrl"]) || !string.IsNullOrWhiteSpace(_config["Bot:WsUrl"]);
+
     private async Task SaveConfigUpdatesAsync(HttpListenerContext ctx)
     {
         {
@@ -421,6 +544,11 @@ public sealed class AdminService : IHostedService
             }
 
             var changed = new List<string>();
+            // 在内存里改完全部字段，**最后只写一次盘**。
+            // （以前是每改一个字段写一次文件：文件被反复截断，配置系统正好在截断的瞬间读到半截 JSON，
+            //   解析失败会把内存里的配置数据整片清空——表现为所有面板配置变空、识图 BaseUrl 读不到直接罢工）
+            var current = File.ReadAllText(cfgPath, Encoding.UTF8);
+            var next = current;
             foreach (var u in updates.OfType<JsonObject>())
             {
                 var p = u["path"]?.GetValue<string>();
@@ -429,30 +557,61 @@ public sealed class AdminService : IHostedService
                 var parts = p.Split('.');
                 if (parts.Length == 0 || !parts[0].Equals("Bot", StringComparison.OrdinalIgnoreCase)) continue;
 
-                var json = File.ReadAllText(cfgPath, Encoding.UTF8);
-                var next = SetJsonValue(json, parts[1..], v);
-                if (next != json)
+                var after = SetJsonValue(next, parts[1..], v);
+                if (after != next)
                 {
-                    File.WriteAllText(cfgPath, next, Encoding.UTF8);
                     changed.Add(p);
+                    next = after;
                 }
             }
 
             if (changed.Count > 0)
             {
+                // 写盘前自检：新内容必须是合法 JSON（注释允许）——宁可这次不生效，也不能把配置写坏
+                if (!IsValidJson(next, out var jsonError))
+                {
+                    _logger.LogError("拒绝写入 appsettings.json：新内容不是合法 JSON（{Err}）", jsonError);
+                    ctx.Response.StatusCode = 500;
+                    await WriteTextAsync(ctx, JsonSerializer.Serialize(new { error = "写入被拒绝：生成的内容不是合法 JSON（" + jsonError + "）" }), "application/json");
+                    return;
+                }
+
+                // 原子写：写临时文件再替换。这样文件系统通知/配置热重载**永远读不到半截文件**
+                WriteAtomic(cfgPath, next);
+
                 // 同步到源码目录（restart.bat 会用 src 覆盖运行目录，防止改动丢失）
                 var srcPath = FindSrcAppsettings();
-                if (srcPath is not null)
-                {
-                    File.WriteAllText(srcPath, File.ReadAllText(cfgPath, Encoding.UTF8), Encoding.UTF8);
-                }
+                if (srcPath is not null) WriteAtomic(srcPath, next);
+
                 // 热更新：重载配置并重新绑定到 BotOptions（大部分即时生效）
-                try
+                try { if (_config is IConfigurationRoot root) root.Reload(); }
+                catch (Exception ex) { _logger.LogError(ex, "配置热更新失败（读到不完整文件），稍后自愈重试"); }
+
+                // 自检：配置真的读得回来吗？读不回来（被清空）就地重载一次自愈
+                if (!ConfigLooksSane())
                 {
-                    if (_config is IConfigurationRoot root) root.Reload();
+                    await Task.Delay(300);
+                    try { if (_config is IConfigurationRoot root2) root2.Reload(); }
+                    catch (Exception ex) { _logger.LogError(ex, "配置自愈重载仍失败"); }
+                }
+
+                // 关键：**配置不正常时绝不 Bind**——否则会把启动时绑定好的 BotOptions 一起冲成默认值
+                if (ConfigLooksSane())
+                {
                     _config.GetSection("Bot").Bind(_options);
                 }
-                catch (Exception ex) { _logger.LogWarning(ex, "配置热更新失败"); }
+                else
+                {
+                    _logger.LogError("配置数据异常（Bot:Llm:BaseUrl 读不到），已跳过 Options 重绑定、保留旧的可用配置。" +
+                                     "本次改动可能未生效，建议重启 QQBot。文件本身是好的：{Path}", cfgPath);
+                    await ServeJsonAsync(ctx, new JsonObject
+                    {
+                        ["ok"] = true,
+                        ["changed"] = changed.Count,
+                        ["warning"] = "配置热重载异常，改动可能未生效，建议重启 QQBot",
+                    });
+                    return;
+                }
 
                 // WsUrl 变更：主动断开 WS，重连循环会用新地址
                 if (changed.Any(c => c.Equals("Bot.WsUrl", StringComparison.OrdinalIgnoreCase)))
@@ -540,7 +699,9 @@ public sealed class AdminService : IHostedService
                     ["desc"] = overridden ? ov : t.Description,
                     ["overridden"] = overridden,
                     ["disabled"] = _tools.IsDisabled(t.Name),
-                    ["guestAllowed"] = _tools.IsGuestAllowed(t.Name),
+                    // 仅主人可用的工具（如截图）：对客人恒为不可用——白名单也放不出来，面板照实显示
+                    ["ownerOnly"] = t.OwnerOnly,
+                    ["guestAllowed"] = !t.OwnerOnly && _tools.IsGuestAllowed(t.Name),
                 });
             }
             await ServeJsonAsync(ctx, arr);
@@ -885,10 +1046,24 @@ public sealed class AdminService : IHostedService
                     }
                     return json[..idx] + valueText + json[qEnd..];
                 }
-                // bool/number：替换到逗号/右括号/换行为止（保留行尾注释）
+                // 数字/布尔：**只替换"值本身"这一小段**——遇空白、逗号、括号、注释斜杠即止。
+                // （原来是"替换到逗号为止"，注释里只要带半角逗号就会把注释截断，
+                //   写出 `2560,等比缩放)` 这种非法 JSON，整份配置直接废掉、机器人起不来）
                 int e = idx;
-                while (e < json.Length && json[e] != ',' && json[e] != '}' && json[e] != '\r' && json[e] != '\n') e++;
-                return json[..idx] + valueText + json[e..];
+                while (e < json.Length && !char.IsWhiteSpace(json[e]) &&
+                       json[e] != ',' && json[e] != '}' && json[e] != ']' && json[e] != '/') e++;
+
+                // 面板发来的是字符串，但这一行原本就是数字/布尔（否则走不到这个分支）→ 按原类型裸写，别写成 "1"
+                var literal = valueText;
+                if (value is JsonValue lv && lv.GetValueKind() == JsonValueKind.String)
+                {
+                    var raw = lv.GetValue<string>();
+                    if (double.TryParse(raw, System.Globalization.NumberStyles.Any,
+                                        System.Globalization.CultureInfo.InvariantCulture, out _)
+                        || bool.TryParse(raw, out _))
+                        literal = raw;
+                }
+                return json[..idx] + literal + json[e..];
             }
 
             // 进入子对象：跳过 { 与空白
@@ -1122,6 +1297,617 @@ public sealed class AdminService : IHostedService
         {
             await ServeJsonAsync(ctx, new JsonObject { ["error"] = "请求失败：" + ex.Message });
         }
+    }
+
+    /// <summary>
+    /// 读取 workflow 模板的节点清单（供「注入提示词组件 ID」下拉选择）。
+    /// 返回每个节点的 id / class / 标题 / 输入字段（kind: text=可直接写入的字符串字段，linked=已连线，other=其他）。
+    /// GET /api/comfyui/nodes
+    /// </summary>
+    private async Task HandleWorkflowNodesAsync(HttpListenerContext ctx)
+    {
+        var opt = _options.ComfyUI;
+        var wanted = ctx.Request.QueryString["file"];
+        var wf = _workflows.Resolve(wanted);
+        var result = new JsonObject
+        {
+            ["file"] = wf?.File ?? "",
+            ["path"] = opt.WorkflowDir,
+            ["fullPath"] = wf?.FullPath ?? "",
+            ["positiveNodeId"] = string.IsNullOrWhiteSpace(wf?.PositiveNodeId) ? opt.PositiveNodeId : wf!.PositiveNodeId,
+            ["positiveValueKey"] = string.IsNullOrWhiteSpace(wf?.PositiveValueKey) ? opt.PositiveValueKey : wf!.PositiveValueKey,
+            ["dir"] = _workflows.Dir,
+        };
+        if (wf is null || !File.Exists(wf.FullPath))
+        {
+            result["error"] = wf is null ? $"工作流目录里没有 json 文件：{_workflows.Dir}" : "workflow 文件不存在：" + wf.FullPath;
+            await ServeJsonAsync(ctx, result);
+            return;
+        }
+        var full = wf.FullPath;
+        try
+        {
+            var root = JsonNode.Parse(await File.ReadAllTextAsync(full)) as JsonObject;
+            var nodes = new JsonArray();
+            if (root is not null)
+            {
+                // 按节点 ID 数值排序（32,319 之类自然顺序），非数字 ID 排后面
+                var ordered = root
+                    .Where(kv => kv.Value is JsonObject)
+                    .OrderBy(kv => int.TryParse(kv.Key, out var n) ? n : int.MaxValue)
+                    .ThenBy(kv => kv.Key);
+                foreach (var kv in ordered)
+                {
+                    var node = (JsonObject)kv.Value!;
+                    var fields = new JsonArray();
+                    if (node["inputs"] is JsonObject inputs)
+                    {
+                        foreach (var f in inputs)
+                        {
+                            var kind = f.Value switch
+                            {
+                                JsonArray => "linked",                 // [节点, 槽位]：已连线（写入会覆盖连线）
+                                JsonValue v when v.GetValueKind() == JsonValueKind.String => "text",
+                                _ => "other"
+                            };
+                            fields.Add(new JsonObject { ["key"] = f.Key, ["kind"] = kind });
+                        }
+                    }
+                    nodes.Add(new JsonObject
+                    {
+                        ["id"] = kv.Key,
+                        ["class"] = node["class_type"]?.GetValue<string>() ?? "",
+                        ["title"] = node["_meta"]?["title"]?.GetValue<string>() ?? "",
+                        ["fields"] = fields,
+                    });
+                }
+            }
+            result["nodes"] = nodes;
+            await ServeJsonAsync(ctx, result);
+        }
+        catch (Exception ex)
+        {
+            result["error"] = "解析 workflow 失败：" + ex.Message;
+            await ServeJsonAsync(ctx, result);
+        }
+    }
+
+    /// <summary>
+    /// 工作流清单与说明管理：
+    /// GET  返回目录 + 每个流（文件名/说明/节点 ID/节点数/大小/时间/是否默认）
+    /// PUT  保存说明与节点 ID（body: {"default":"xxx.json","flows":{"文件名":{"desc":..,"positiveNodeId":..,"positiveValueKey":..,"saveImageNodeId":..}}}）
+    /// </summary>
+    private async Task HandleWorkflowsAsync(HttpListenerContext ctx)
+    {
+        if (ctx.Request.HttpMethod == "GET")
+        {
+            var arr = new JsonArray();
+            foreach (var w in _workflows.Load())
+            {
+                arr.Add(new JsonObject
+                {
+                    ["file"] = w.File,
+                    ["desc"] = w.Desc,
+                    ["positiveNodeId"] = w.PositiveNodeId,
+                    ["positiveValueKey"] = w.PositiveValueKey,
+                    ["saveImageNodeId"] = w.SaveImageNodeId,
+                    ["isDefault"] = w.IsDefault,
+                    ["nodeCount"] = w.NodeCount,
+                    ["size"] = w.Size,
+                    ["modifiedAt"] = w.ModifiedAt.ToString("yyyy-MM-dd HH:mm"),
+                });
+            }
+            await ServeJsonAsync(ctx, new JsonObject
+            {
+                ["dir"] = _workflows.Dir,
+                ["globalPositiveNodeId"] = _options.ComfyUI.PositiveNodeId,
+                ["globalPositiveValueKey"] = _options.ComfyUI.PositiveValueKey,
+                ["globalSaveImageNodeId"] = _options.ComfyUI.SaveImageNodeId,
+                ["flows"] = arr,
+            });
+            return;
+        }
+
+        if (ctx.Request.HttpMethod == "PUT")
+        {
+            var body = JsonNode.Parse(await ReadBodyAsync(ctx)) as JsonObject;
+            if (body is null)
+            {
+                ctx.Response.StatusCode = 400;
+                await WriteTextAsync(ctx, "{\"error\":\"bad request\"}", "application/json");
+                return;
+            }
+            var def = body["default"]?.GetValue<string>() ?? "";
+            var flows = new List<(string, string, string, string, string)>();
+            if (body["flows"] is JsonObject fo)
+            {
+                foreach (var kv in fo)
+                {
+                    if (kv.Value is not JsonObject o) continue;
+                    flows.Add((kv.Key,
+                               o["desc"]?.GetValue<string>() ?? "",
+                               o["positiveNodeId"]?.GetValue<string>() ?? "",
+                               o["positiveValueKey"]?.GetValue<string>() ?? "",
+                               o["saveImageNodeId"]?.GetValue<string>() ?? ""));
+                }
+            }
+            _workflows.SaveMeta(def, flows);
+            var refreshed = _workflows.Load();
+            await ServeJsonAsync(ctx, new JsonObject
+            {
+                ["ok"] = true,
+                ["saved"] = flows.Count,
+                ["default"] = refreshed.FirstOrDefault(w => w.IsDefault)?.File ?? "",
+            });
+            return;
+        }
+
+        ctx.Response.StatusCode = 405;
+        await WriteTextAsync(ctx, "{\"error\":\"method not allowed\"}", "application/json");
+    }
+
+    /// <summary>
+    /// 测试某个工作流能否注入提示词（不提交 ComfyUI、不出图）：
+    /// 用同一套 WorkflowTemplate 逻辑写入一句测试提示词，返回成功/失败与节点信息。
+    /// POST body: {"file":"xxx.json","positiveNodeId":"..","positiveValueKey":".."}（后两项空=用该流/全局配置）
+    /// </summary>
+    private async Task HandleWorkflowTestAsync(HttpListenerContext ctx)
+    {
+        if (ctx.Request.HttpMethod != "POST")
+        {
+            ctx.Response.StatusCode = 405;
+            await WriteTextAsync(ctx, "{\"error\":\"method not allowed\"}", "application/json");
+            return;
+        }
+        var body = JsonNode.Parse(await ReadBodyAsync(ctx)) as JsonObject;
+        var wf = _workflows.Resolve(body?["file"]?.GetValue<string>());
+        if (wf is null)
+        {
+            await ServeJsonAsync(ctx, new JsonObject { ["ok"] = false, ["error"] = $"工作流目录里没有 json 文件：{_workflows.Dir}" });
+            return;
+        }
+        var node = body?["positiveNodeId"]?.GetValue<string>();
+        var key = body?["positiveValueKey"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(node)) node = string.IsNullOrWhiteSpace(wf.PositiveNodeId) ? _options.ComfyUI.PositiveNodeId : wf.PositiveNodeId;
+        if (string.IsNullOrWhiteSpace(key)) key = string.IsNullOrWhiteSpace(wf.PositiveValueKey) ? _options.ComfyUI.PositiveValueKey : wf.PositiveValueKey;
+        try
+        {
+            var tpl = new QQBot.Core.ComfyUI.WorkflowTemplate(wf.FullPath, node!, key!);
+            var built = tpl.Build("__workflow_test__");
+            var injected = built[node!]?["inputs"]?[key!]?.GetValue<string>();
+            await ServeJsonAsync(ctx, new JsonObject
+            {
+                ["ok"] = injected == "__workflow_test__",
+                ["file"] = wf.File,
+                ["nodeId"] = node,
+                ["valueKey"] = key,
+                ["nodeCount"] = built.Count,
+                ["message"] = injected == "__workflow_test__"
+                    ? $"注入成功：节点 {node} 的 {key} 可写入（该流共 {built.Count} 个节点）"
+                    : $"写入后读回不一致（节点 {node} / 字段 {key}）",
+            });
+        }
+        catch (Exception ex)
+        {
+            await ServeJsonAsync(ctx, new JsonObject
+            {
+                ["ok"] = false,
+                ["file"] = wf.File,
+                ["nodeId"] = node,
+                ["valueKey"] = key,
+                ["error"] = ex.Message,
+            });
+        }
+    }
+
+    // ---------------- 桌面宠物（DesktopPet 客户端） ----------------
+
+    /// <summary>宠物接口的会话键（{ownerId} 替换成主人 QQ）</summary>
+    private string PetSessionKey()
+    {
+        var key = (_options.Pet.SessionKey ?? "").Replace("{ownerId}", _options.OwnerId.ToString());
+        return string.IsNullOrWhiteSpace(key) ? $"pet:{_options.OwnerId}" : key;
+    }
+
+    /// <summary>GET /api/pet/ping —— 桌面端用来显示"连上她没有"</summary>
+    private async Task HandlePetPingAsync(HttpListenerContext ctx)
+    {
+        await ServeJsonAsync(ctx, new JsonObject
+        {
+            ["ok"] = true,
+            ["enabled"] = _options.Pet.Enabled,
+            ["online"] = _petBridge.IsOnline,          // 她此刻是否认为"主人在电脑前"（决定主动消息走气泡还是 QQ）
+            ["status"] = _petBridge.StatusText,
+            ["activityMode"] = _activity.Latest.Mode.ToString().ToLowerInvariant(),
+            ["sessionKey"] = PetSessionKey(),
+            ["ownerId"] = _options.OwnerId,
+            ["timeoutSeconds"] = _options.Pet.TimeoutSeconds,
+            ["serverTime"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+        });
+    }
+
+    /// <summary>
+    /// POST /api/pet/chat —— 桌面宠物发一句话给她，返回她要说的话。
+    /// 请求：{"text":"..."}
+    /// 响应：{"ok":true,"replies":[{"type":"text","text":"..."},{"type":"image","dataUrl":"data:image/png;base64,...","caption":"..."}],"elapsedMs":123}
+    /// </summary>
+    private async Task HandlePetChatAsync(HttpListenerContext ctx, CancellationToken ct)
+    {
+        if (!_options.Pet.Enabled)
+        {
+            ctx.Response.StatusCode = 403;
+            await WriteTextAsync(ctx, "{\"error\":\"宠物接口已关闭（Bot.Pet.Enabled=false）\"}", "application/json");
+            return;
+        }
+        if (!string.Equals(ctx.Request.HttpMethod, "POST", StringComparison.OrdinalIgnoreCase))
+        {
+            ctx.Response.StatusCode = 405;
+            await WriteTextAsync(ctx, "{\"error\":\"请用 POST\"}", "application/json");
+            return;
+        }
+
+        string? text;
+        try
+        {
+            var body = JsonNode.Parse(await ReadBodyAsync(ctx)) as JsonObject;
+            text = body?["text"]?.GetValue<string>();
+        }
+        catch { text = null; }
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            ctx.Response.StatusCode = 400;
+            await WriteTextAsync(ctx, "{\"error\":\"缺少 text\"}", "application/json");
+            return;
+        }
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(Math.Max(10, _options.Pet.TimeoutSeconds)));
+        try
+        {
+            var replies = await _dispatcher.HandlePetAsync(text.Trim(), cts.Token);
+            var arr = new JsonArray();
+            foreach (var r in replies)
+            {
+                var item = new JsonObject { ["type"] = r.Type };
+                if (r.Text is not null) item["text"] = r.Text;
+                if (r.DataUrl is not null) item["dataUrl"] = r.DataUrl;
+                if (r.Caption is not null) item["caption"] = r.Caption;
+                arr.Add(item);
+            }
+            _logger.LogInformation("桌面宠物对话完成：{N} 条回复，{Ms}ms", replies.Count, sw.ElapsedMilliseconds);
+            await ServeJsonAsync(ctx, new JsonObject
+            {
+                ["ok"] = true,
+                ["replies"] = arr,
+                ["elapsedMs"] = sw.ElapsedMilliseconds,
+            });
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested && !ct.IsCancellationRequested)
+        {
+            ctx.Response.StatusCode = 504;
+            await WriteTextAsync(ctx, "{\"error\":\"她想了太久（超过 Bot.Pet.TimeoutSeconds）\"}", "application/json");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "桌面宠物对话失败");
+            ctx.Response.StatusCode = 500;
+            await WriteTextAsync(ctx,
+                JsonSerializer.Serialize(new { error = ex.Message }), "application/json");
+        }
+    }
+
+    /// <summary>
+    /// GET /api/pet/inbox?since=N&amp;online=1 —— 桌面端轮询：既是心跳（标记"主人在电脑前"），
+    /// 也是她主动消息（自主活动想找主人说话）的下发通道。
+    /// 返回 {"ok":true,"online":true,"lastSeq":N,"pushes":[{"type":"text","text":"…"}]}
+    /// </summary>
+    /// <summary>
+    /// GET /api/pet/status —— 桌面精灵在**等待回复期间**快速轮询的轻量接口：
+    /// 只回"她此刻在调什么工具"（工具名 + 递增序号）+ 当前活动模式，
+    /// 桌面端据此播"绑定到该工具的动作帧"，播完回到 thinking。
+    /// ⚠️ 与 /api/pet/inbox 不同：这里**不标记在线、不取消息**——它是纯读的状态查询，
+    /// 所以可以高频调（默认 700ms 一次）。
+    /// </summary>
+    private async Task HandlePetStatusAsync(HttpListenerContext ctx)
+    {
+        var hint = new JsonObject
+        {
+            ["name"] = QQBot.Core.Pet.PetActionHint.Tool,
+            ["seq"] = QQBot.Core.Pet.PetActionHint.Seq,
+            ["at"] = QQBot.Core.Pet.PetActionHint.At == DateTime.MinValue
+                ? null
+                : QQBot.Core.Pet.PetActionHint.At.ToLocalTime().ToString("HH:mm:ss"),
+        };
+        await ServeJsonAsync(ctx, new JsonObject
+        {
+            ["ok"] = true,
+            ["hint"] = hint,
+            ["activityMode"] = _activity.Latest.Mode.ToString().ToLowerInvariant(),
+            ["online"] = _petBridge.IsOnline,
+        });
+    }
+
+    private async Task HandlePetInboxAsync(HttpListenerContext ctx)
+    {
+        if (!_options.Pet.Enabled)
+        {
+            ctx.Response.StatusCode = 403;
+            await WriteTextAsync(ctx, "{\"error\":\"宠物接口已关闭（Bot.Pet.Enabled=false）\"}", "application/json");
+            return;
+        }
+
+        var q = ctx.Request.QueryString;
+        var since = long.TryParse(q["since"], out var v) ? v : 0;
+        var online = !string.Equals(q["online"], "0", StringComparison.Ordinal);
+        if (online) _petBridge.MarkOnline();   // 心跳：她在电脑前
+        else _petBridge.MarkOffline();         // 明确说自己躲起来了 → 别往桌面投
+
+        var pushes = _petBridge.PushesSince(since, out var lastSeq);
+        var arr = new JsonArray();
+        foreach (var p in pushes)
+        {
+            var item = new JsonObject { ["type"] = p.Type };
+            if (p.Text is not null) item["text"] = p.Text;
+            if (p.DataUrl is not null) item["dataUrl"] = p.DataUrl;
+            if (p.Caption is not null) item["caption"] = p.Caption;
+            arr.Add(item);
+        }
+        if (pushes.Count > 0)
+            _logger.LogInformation("桌面精灵取走 {N} 条主动消息", pushes.Count);
+
+        await ServeJsonAsync(ctx, new JsonObject
+        {
+            ["ok"] = true,
+            ["online"] = _petBridge.IsOnline,
+            ["lastSeq"] = lastSeq,
+            ["configVersion"] = _petConfig.Version,   // 变了 = 桌面端该重新拉一份配置
+            ["activityMode"] = _activity.Latest.Mode.ToString().ToLowerInvariant(),   // 桌面精灵据此决定游戏模式要不要鼠标穿透
+            // 她最近一次工具调用：桌面端**平时**也能据此播"工具绑定动作"。
+            // 以前只有"主人正在等她回复"时桌面端才轮询 /api/pet/status，所以她自主活动里
+            // （游戏模式主动截屏、自己翻文件）做了什么，桌面上一点反应都没有。
+            ["tool"] = QQBot.Core.Pet.PetActionHint.Tool,
+            ["toolSeq"] = QQBot.Core.Pet.PetActionHint.Seq,
+            ["pushes"] = arr,
+            ["serverTime"] = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+        });
+    }
+
+    /// <summary>
+    /// POST /api/pet/presence {"online":false} —— 桌面端明确上报状态（托盘躲起来 / 正常退出时调）。
+    /// 不调也没关系，心跳超时（Bot.Pet.OfflineAfterSeconds）会自动判定为离线。
+    /// </summary>
+    private async Task HandlePetPresenceAsync(HttpListenerContext ctx)
+    {
+        if (!_options.Pet.Enabled)
+        {
+            ctx.Response.StatusCode = 403;
+            await WriteTextAsync(ctx, "{\"error\":\"宠物接口已关闭\"}", "application/json");
+            return;
+        }
+        bool? online = null;
+        try
+        {
+            var body = JsonNode.Parse(await ReadBodyAsync(ctx)) as JsonObject;
+            online = body?["online"]?.GetValue<bool>();
+        }
+        catch { /* 无 body 就当作"报活" */ }
+
+        if (online == false) _petBridge.MarkOffline();
+        else _petBridge.MarkOnline();
+
+        _logger.LogInformation("桌面精灵状态上报：{Status}", _petBridge.StatusText);
+        await ServeJsonAsync(ctx, new JsonObject { ["ok"] = true, ["online"] = _petBridge.IsOnline });
+    }
+
+    /// <summary>GET /api/screen/monitors —— 本机显示器清单（面板「屏幕截图」选屏用）</summary>
+    private async Task HandleScreenMonitorsAsync(HttpListenerContext ctx)
+    {
+        var arr = new JsonArray();
+        try
+        {
+            var (_, _, vw, vh) = QQBot.Core.Tools.ScreenCaptureTool.VirtualScreen();
+            arr.Add(new JsonObject
+            {
+                ["index"] = 0,
+                ["label"] = $"0 · 全部屏幕（整幅桌面 {vw}x{vh}）",
+                ["width"] = vw,
+                ["height"] = vh,
+            });
+            foreach (var m in QQBot.Core.Tools.ScreenCaptureTool.ListMonitors())
+            {
+                arr.Add(new JsonObject
+                {
+                    ["index"] = m.Index,
+                    ["label"] = m.Label,
+                    ["width"] = m.Width,
+                    ["height"] = m.Height,
+                    ["primary"] = m.Primary,
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            await ServeJsonAsync(ctx, new JsonObject { ["ok"] = false, ["error"] = ex.Message });
+            return;
+        }
+        await ServeJsonAsync(ctx, new JsonObject
+        {
+            ["ok"] = true,
+            ["current"] = _options.Tools.ScreenCaptureMonitor,
+            ["monitors"] = arr,
+        });
+    }
+
+    /// <summary>
+    /// GET  /api/pet/config —— 桌面端取后台配置（{version, config}；从没存过则 config=null）
+    /// PUT  /api/pet/config —— 面板保存配置（body = pet.json 同结构的 JSON 对象），保存后 version+1
+    /// </summary>
+    private async Task HandlePetConfigAsync(HttpListenerContext ctx)
+    {
+        if (ctx.Request.HttpMethod == "PUT" || ctx.Request.HttpMethod == "POST")
+        {
+            JsonNode? node;
+            try { node = JsonNode.Parse(await ReadBodyAsync(ctx)); }
+            catch (Exception ex)
+            {
+                ctx.Response.StatusCode = 400;
+                await WriteTextAsync(ctx, JsonSerializer.Serialize(new { error = "JSON 解析失败：" + ex.Message }), "application/json");
+                return;
+            }
+            if (node is not JsonObject obj)
+            {
+                ctx.Response.StatusCode = 400;
+                await WriteTextAsync(ctx, "{\"error\":\"配置必须是 JSON 对象\"}", "application/json");
+                return;
+            }
+            var warnings = SanitizePetActions(obj, _petConfig.Snapshot());
+            var (ok, version, error) = _petConfig.Save(obj);
+            if (!ok)
+            {
+                ctx.Response.StatusCode = 500;
+                await WriteTextAsync(ctx, JsonSerializer.Serialize(new { error }), "application/json");
+                return;
+            }
+            var warnArr = new JsonArray();
+            foreach (var w in warnings) warnArr.Add(w);
+            if (warnings.Count > 0)
+                _logger.LogWarning("桌面精灵配置保存时做了修正：{Warnings}", string.Join("；", warnings));
+            await ServeJsonAsync(ctx, new JsonObject { ["ok"] = true, ["version"] = version, ["warnings"] = warnArr });
+            return;
+        }
+
+        await ServeJsonAsync(ctx, new JsonObject
+        {
+            ["ok"] = true,
+            ["version"] = _petConfig.Version,
+            ["hasConfig"] = _petConfig.HasConfig,
+            ["path"] = _petConfig.FilePath,
+            ["config"] = _petConfig.Snapshot(),
+        });
+    }
+
+    /// <summary>
+    /// 桌面精灵的**系统动作**：程序按名字直接调用（idle 待机 / talk 说话中 / thinking 等待回复中 /
+    /// startup 开机登场 / error 出错告警），面板里删不掉——删掉就等于把她某个状态弄没了。
+    /// </summary>
+    private static readonly string[] PetSystemActions = { "idle", "talk", "thinking", "startup", "error" };
+
+    /// <summary>
+    /// 精灵配置落盘前的体检（主人要求：系统动作不可删；每个工具只能绑一个动作）：
+    ///  ① 系统动作缺失 → 从上一版捞回来（捞不到就补个空壳并提示去补帧路径）
+    ///  ② 同一个工具被绑到多个动作 → 先到先得，后来者摘掉
+    /// 返回被修正的说明，面板会提示主人。
+    /// </summary>
+    private static List<string> SanitizePetActions(JsonObject cfg, JsonObject? previous)
+    {
+        var warnings = new List<string>();
+        if (cfg["actions"] is not JsonObject actions)
+        {
+            actions = new JsonObject();
+            cfg["actions"] = actions;
+        }
+        var prevActions = previous?["actions"] as JsonObject;
+
+        // ① 系统动作不可缺
+        foreach (var sys in PetSystemActions)
+        {
+            if (actions.Any(kv => kv.Key.Equals(sys, StringComparison.OrdinalIgnoreCase))) continue;
+
+            JsonNode? prevValue = null;
+            if (prevActions is not null)
+            {
+                foreach (var kv in prevActions)
+                {
+                    if (kv.Key.Equals(sys, StringComparison.OrdinalIgnoreCase)) { prevValue = kv.Value; break; }
+                }
+            }
+
+            if (prevValue is not null)
+            {
+                actions[sys] = prevValue.DeepClone();
+                warnings.Add($"「{sys}」是系统动作、不能删除，已从上一版恢复");
+            }
+            else
+            {
+                actions[sys] = new JsonObject { ["frames"] = new JsonArray(), ["fps"] = 4, ["loop"] = true };
+                warnings.Add($"「{sys}」是系统动作、不能删除，已补上空壳——请去面板补上帧路径");
+            }
+        }
+
+        // ② 一个工具只能绑一个动作
+        var claimed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in actions.ToList())
+        {
+            if (kv.Value is not JsonObject a) continue;
+            if (a["tools"] is not JsonArray tools)
+            {
+                a.Remove("tools");
+                continue;
+            }
+            var kept = new JsonArray();
+            foreach (var node in tools.ToList())
+            {
+                string? tool = null;
+                try { tool = node?.GetValue<string>()?.Trim(); } catch { /* 非字符串忽略 */ }
+                if (string.IsNullOrEmpty(tool)) continue;
+                if (claimed.TryGetValue(tool, out var owner))
+                {
+                    warnings.Add($"工具 {tool} 已绑定在「{owner}」上（每个工具只能绑一个动作），已从「{kv.Key}」移除");
+                    continue;
+                }
+                claimed[tool] = kv.Key;
+                kept.Add(tool);
+            }
+            a["tools"] = kept;
+        }
+        return warnings;
+    }
+
+    /// <summary>
+    /// GET /api/activity/status —— 当前的"主人状态"与模式判定（面板小卡片用）。
+    /// 带 ?refresh=1 时立刻重新采样一次（否则返回监测服务最近一次的结果，最长差一个采样周期）。
+    /// </summary>
+    private async Task HandleActivityStatusAsync(HttpListenerContext ctx)
+    {
+        var refresh = !string.IsNullOrEmpty(ctx.Request.QueryString["refresh"]);
+        QQBot.Core.Activity.ActivitySnapshot s;
+        try
+        {
+            s = refresh ? _activity.SampleAndDecide() : _activity.Latest;
+        }
+        catch (Exception ex)
+        {
+            await ServeJsonAsync(ctx, new JsonObject { ["ok"] = false, ["error"] = ex.Message });
+            return;
+        }
+
+        await ServeJsonAsync(ctx, new JsonObject
+        {
+            ["ok"] = true,
+            ["mode"] = s.Mode.ToString().ToLowerInvariant(),
+            ["modeText"] = s.ModeText,
+            ["summary"] = s.Summary,
+            ["reason"] = s.Reason,
+            ["score"] = s.Score,
+            ["ownerAtPc"] = s.OwnerAtPc,
+            ["idleSeconds"] = Math.Round(s.IdleSeconds, 1),
+            ["foregroundProcess"] = s.ForegroundProcess,
+            ["foregroundTitle"] = s.ForegroundTitle,
+            ["foregroundFullscreen"] = s.ForegroundFullscreen,
+            ["exclusiveFullscreen"] = s.ExclusiveFullscreen,
+            ["mouseClipped"] = s.MouseClipped,
+            ["foregroundGpu"] = Math.Round(s.ForegroundGpu, 1),
+            ["totalGpu"] = Math.Round(s.TotalGpu, 1),
+            ["steamAppId"] = s.SteamAppId,
+            ["sampledAt"] = s.SampledAtUtc == DateTime.MinValue
+                ? ""
+                : s.SampledAtUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+            ["pollSeconds"] = _options.Activity.PollSeconds,
+            ["gameIntervalMinutes"] = _options.Activity.GameIntervalMinutes,
+            ["awayIntervalMinutes"] = _options.Activity.AwayIntervalMinutes,
+        });
     }
 
     /// <summary>读取请求体文本</summary>

@@ -6,22 +6,38 @@ using QQBot.Core.Options;
 namespace QQBot.Core.Tools;
 
 /// <summary>
-/// 自主活动专用工具：send_private_to_owner —— 私聊主人。
+/// 自主活动专用工具：send_private_to_owner —— 找主人说话。
 /// 只在自主活动（AutoActivity）时注册给 LLM，普通对话不可用。
+///
+/// **投递渠道按桌面精灵在线状态自动选择**（主人要求）：
+///  - 桌面精灵在线（主人坐在电脑前）→ 走桌面气泡，主人立刻看得见；
+///  - 桌面精灵不在 → 回落 QQ 私聊。
+/// 群聊功能不受影响（send_group_message 永远走 QQ）。
 /// </summary>
 public sealed class SendPrivateToOwnerTool : ITool
 {
     private readonly OneBotClient _client;
+    private readonly Pet.PetBridge _pet;
     private readonly long _ownerId;
+    private readonly bool _ownerAtPc;
 
-    public SendPrivateToOwnerTool(OneBotClient client, BotOptions options)
+    /// <param name="ownerAtPc">
+    /// 主人此刻是否在电脑前（来自主机活动监测）。**光看"桌面精灵在线"不够**：
+    /// 主人可能开着精灵但人走开了（看家模式），那种情况弹气泡他根本看不见，必须走 QQ。
+    /// </param>
+    public SendPrivateToOwnerTool(OneBotClient client, BotOptions options, Pet.PetBridge pet, bool ownerAtPc = true)
     {
         _client = client;
+        _pet = pet;
         _ownerId = options.OwnerId;
+        _ownerAtPc = ownerAtPc;
     }
 
     public string Name => "send_private_to_owner";
-    public string Description => "给主人发送一条私聊消息。想主动找主人说话、问好、汇报、提醒、撒娇时调用。参数 text 为消息内容。";
+
+    public string Description =>
+        "给主人发一条消息，想主动找主人说话、问好、汇报、提醒、撒娇时调用。参数 text 为消息内容。" +
+        "投递渠道由系统自动选择（主人在电脑前且桌面精灵开着就弹气泡，否则发 QQ 私聊），你不用操心，只管说内容。";
 
     public JsonObject ParametersSchema => new()
     {
@@ -41,8 +57,16 @@ public sealed class SendPrivateToOwnerTool : ITool
         if (string.IsNullOrWhiteSpace(text)) return "内容为空，未发送";
         if (_ownerId <= 0) return "未配置主人 QQ（OwnerId），无法私聊";
 
+        // 主人在电脑前 + 桌面精灵在线：投到她桌面上的气泡（他正对着屏幕，QQ 反而看不到）
+        // 主人不在电脑前（看家模式）：气泡飘在没人的屏幕上等于没发 → 改走 QQ 私聊
+        if (_pet.IsOnline && _ownerAtPc)
+        {
+            _pet.EnqueuePush(Pet.PetReply.Text0(text));
+            return $"已通过桌面精灵转达主人（气泡显示）：{text}";
+        }
+
         var ok = await _client.SendPrivateMessageAsync(_ownerId, [Segments.Text(text)], ct);
-        return ok ? $"已私聊主人：{text}" : "私聊主人发送失败";
+        return ok ? $"已私聊主人（QQ）：{text}" : "私聊主人发送失败";
     }
 }
 

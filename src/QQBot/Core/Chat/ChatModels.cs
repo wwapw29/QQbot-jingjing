@@ -25,9 +25,18 @@ public sealed class ChatMessage
     [JsonIgnore]
     public List<string>? ImageDataUrls { get; set; }
 
-    /// <summary>DeepSeek Files API 的 file_id 列表（如 file-api-xxx）；序列化为 content 数组的 file 块（与 ImageDataUrls 互斥，优先）</summary>
+    /// <summary>DeepSeek Files API 的 file_id 列表（如 file-api-xxx）；序列化为 content 数组的 file 块（优先于 ImageDataUrls）</summary>
     [JsonIgnore]
     public List<string>? FileIds { get; set; }
+
+    /// <summary>
+    /// 强制用 base64 内嵌图片（忽略 FileIds）。**Files API 的保底开关**：
+    /// 消息里同时带着 FileIds 和 ImageDataUrls，正常走 file 块；一旦服务端拒绝 file 块
+    /// （模型不支持 / file_id 失效 / 5xx），ChatEngine 把这个标记翻成 true 重新发一次，
+    /// 图片就变成直接嵌在消息里的 base64——不用重新下载、不用重跑上传。
+    /// </summary>
+    [JsonIgnore]
+    public bool ForceInlineImages { get; set; }
 
     [JsonPropertyName("tool_calls")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
@@ -61,9 +70,15 @@ public sealed class ChatMessageConverter : JsonConverter<ChatMessage>
         writer.WriteStartObject();
         writer.WriteString("role", value.Role);
 
-        if (value.ImageDataUrls is { Count: > 0 } || value.FileIds is { Count: > 0 })
+        // 同一条消息可能同时带 FileIds（Files API）和 ImageDataUrls（base64 保底），
+        // **二选一**，绝不能都发（否则同图重复送两遍）：默认用 file 块，ForceInlineImages 时改用 base64。
+        // 注意：这里只做"选哪个"的局部变量，**不要改动消息本身**——base64 要留着给回退用。
+        var fileIds = value.ForceInlineImages ? null : value.FileIds;
+        var dataUrls = fileIds is { Count: > 0 } ? null : value.ImageDataUrls;
+
+        if (dataUrls is { Count: > 0 } || fileIds is { Count: > 0 })
         {
-            // 多模态 content 数组：文本 + 图片（Files API file 块优先，其次 base64 image_url 块）
+            // 多模态 content 数组：文本 + 图片
             writer.WritePropertyName("content");
             writer.WriteStartArray();
             if (!string.IsNullOrWhiteSpace(value.Content))
@@ -73,9 +88,9 @@ public sealed class ChatMessageConverter : JsonConverter<ChatMessage>
                 writer.WriteString("text", value.Content);
                 writer.WriteEndObject();
             }
-            if (value.FileIds is { Count: > 0 })
+            if (fileIds is { Count: > 0 })
             {
-                foreach (var fid in value.FileIds)
+                foreach (var fid in fileIds)
                 {
                     writer.WriteStartObject();
                     writer.WriteString("type", "file");
@@ -83,7 +98,7 @@ public sealed class ChatMessageConverter : JsonConverter<ChatMessage>
                     writer.WriteEndObject();
                 }
             }
-            foreach (var url in value.ImageDataUrls ?? [])
+            foreach (var url in dataUrls ?? [])
             {
                 writer.WriteStartObject();
                 writer.WriteString("type", "image_url");

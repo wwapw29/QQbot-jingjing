@@ -1,7 +1,8 @@
 # 静静 QQ 机器人（QQBot）
 
 一个运行在本地 Windows 上的 **AI QQ 机器人**，基于 **NapCat（OneBot 11 协议）** + **C# / .NET 10** 构建。
-静静支持私聊/群聊对话、长期记忆、LLM 自主调用工具、本地 ComfyUI 生图、文件沙箱、定时自主活动等能力。
+静静支持私聊/群聊对话、长期记忆、LLM 自主调用工具、本地 ComfyUI 生图、文件沙箱、定时自主活动等能力，
+外加一只**桌面宠物**（WPF）：桌上那只静静和她共用同一套人格与记忆——不是第二个 bot。
 
 > ⚠️ 请始终使用**养过一段时间的 QQ 小号**运行机器人，切勿使用主号（防风控）。
 
@@ -56,31 +57,37 @@ NapCat（独立进程，OneBot 11 协议）
 ## 📁 目录结构
 
 ```
-QQrobot/
-├── docs/                       设计文档 + NapCat 安装教程
-├── tools/
-│   ├── NapCat.Shell/           NapCat 程序（含启动脚本）
-│   └── qq-green/               绿色版 QQ（9.9.33，NapCat 注入运行）
-├── QQBot/
-│   ├── QQBot.sln
-│   ├── scripts/
-│   │   ├── start.bat           启动（同步配置 + 运行）
-│   │   ├── stop.bat            停止
-│   │   └── restart.bat         ⭐ 改配置后一键重启
-│   └── src/QQBot/
-│       ├── Program.cs          DI 装配入口
-│       ├── appsettings.json    所有配置（人设/模型/记忆/开关…）
-│       └── Core/
-│           ├── Options/        配置模型
-│           ├── OneBot/         OneBot 客户端（WS + HTTP + 去重）
-│           ├── Dispatcher/     事件分发器（触发/命令/Agent 循环）
-│           ├── Chat/           对话引擎 / 上下文 / 回复解析
-│           ├── Memory/         SQLite + 神经链记忆
-│           ├── Commands/       主人命令（!help 等）
-│           ├── Tools/          ITool 工具系统（画图/网页/shell/记忆…）
-│           ├── ComfyUI/        ComfyUI 客户端
-│           ├── Hosted/         宿主服务 + 自主活动服务
-│           └── ActivityClock.cs 自主活动空闲检测时钟
+QQBot-share/
+├── scripts/
+│   ├── start.bat               启动（同步配置 + 运行）
+│   ├── stop.bat                停止
+│   └── restart.bat             ⭐ 改配置后一键重启
+├── 启动静静.bat                ⭐ 启动桌面宠物（没构建过会自动构建）
+├── 外部依赖/                   NapCat 程序 / 绿色版 QQ（体积大，未入库）
+└── src/
+    ├── QQBot/                  机器人本体（C# / .NET 10）
+    │   ├── Program.cs          DI 装配入口
+    │   ├── appsettings.json    所有配置（人设/模型/记忆/开关…）
+    │   ├── wwwroot/            后台管理面板（单文件 admin.html）
+    │   └── Core/
+    │       ├── Options/        配置模型
+    │       ├── OneBot/         OneBot 客户端（WS + HTTP + 去重）
+    │       ├── Dispatcher/     事件分发器（触发/命令/Agent 循环）
+    │       ├── Chat/           对话引擎 / 上下文 / 回复解析
+    │       ├── Memory/         SQLite + 神经链记忆
+    │       ├── Commands/       主人命令（!help 等）
+    │       ├── Tools/          ITool 工具系统（画图/网页/shell/记忆…）
+    │       ├── Vision/         识图（专用识图模型 / 主模型嵌入式两种模式）
+    │       ├── Pet/            桌面宠物桥（回复改道 / 主动消息 / 动作提示）
+    │       ├── Activity/       主机活动监测（游戏 / 一般 / 看家三模式）
+    │       ├── ComfyUI/        ComfyUI 客户端
+    │       └── Hosted/         宿主服务 + 自主活动服务
+    └── DesktopPet/             桌面宠物（WPF，**只做前端**；人格与记忆复用 QQBot）
+        ├── DesktopPet.csproj
+        ├── pet.json            外观 / 气泡 / 吸附 / 动作配置（后端地址与令牌也在这）
+        ├── assets/             素材（自带的占位立绘；第三方素材不入库）
+        ├── UI/                 气泡窗口 / 输入框 / 托盘图标
+        └── Pet/                后端客户端 / 配置 / 动作与情绪规则 / 帧加载
 ```
 
 ---
@@ -103,7 +110,7 @@ start-napcat.bat        # 会拉起绿色版 QQ，扫码登录小号
 ### 2. 启动机器人
 双击 `QQBot\scripts\restart.bat`，看到日志：
 ```
-已连接机器人账号：静静 (2049592241)
+已连接机器人账号：静静 (你的机器人QQ)
 WebSocket 已连接 ✓
 ```
 即上线成功。
@@ -127,6 +134,11 @@ WebSocket 已连接 ✓
 | `Shell` | 文件沙箱：目录 / 超时 / 输出限制 |
 | `AutoActivity` | 自主活动：空闲时长 / 各行动独立开关 |
 | `Concurrency` | 并发：同时处理的对话数上限 |
+| `Admin` | 后台管理面板：开关 / 端口（默认 7088）/ 访问令牌（**部署时务必改成自己的**） |
+| `Vision` | 识图：专用模型 / 主模型嵌入式 / 图片压缩与元数据抽取 |
+| `Pet` | 桌面宠物接口（`/api/pet/*`）：会话键 / 超时 / 离线判定秒数 |
+| `Activity` | 三模式联动（游戏 / 一般 / 看家）的判定阈值；游戏模式还有一套独立管线（间隔 / 提示词 / 工具白名单 / 专属记忆） |
+| `BurnToken` | 「烧token模式」：正式回复前先静默收集信息（自己查历史/记忆/文件）再答 |
 | `Debug` | 调试开关（输出 LLM 完整请求/响应） |
 
 > `Llm.DisableReasoningPayload`：`{"thinking":{"type":"disabled"}}` 完全关闭思维链；`{"reasoning_effort":"low"}` 低强度思考。
@@ -163,6 +175,29 @@ WebSocket 已连接 ✓
 
 ---
 
+## 🐾 桌面宠物（DesktopPet）
+
+桌面上那只静静：透明置顶的小人 + 气泡说话。**她和 QQ 里的是同一个她**——
+`POST /api/pet/chat` 直接复用同一套人设、记忆、工具，桌宠只是她的"另一只手"，不是一个新 bot。
+
+### 启动
+1. 先启动机器人（`scripts\restart.bat`）——她的大脑在那边；
+2. 双击仓库根目录的 **`启动静静.bat`**（没构建过会自动 `dotnet build`，首次要还原 NuGet 包，稍等）。
+
+她会出现在屏幕右下角；位置、尺寸、锁定状态会被记住。右键她或托盘图标有菜单，双击她弹出输入框。
+日志在 `%USERPROFILE%\.jingjing-pet\pet.log`（GUI 程序没控制台，出问题先看它）。
+
+### 换素材（换皮肤）
+1. 把立绘丢进 `src\DesktopPet\assets\<你的目录>\`（PNG 序列或 GIF 都行，GIF 会自动拆帧）；
+2. 改 `src\DesktopPet\pet.json`：`assetDir` 指到你的目录，各动作的 `frames` 指向帧文件。
+
+**系统动作** `idle` / `talk` / `thinking` / `startup`（登场）/ `error`（报错）是程序按名字调的，别删；
+普通动作可以配 `triggers`（触发词，说出来就播）/ `weight`（权重）/ `tools`（绑定的工具名，她调这个工具时播一次）。
+更省事的做法：**后台面板 →「桌面精灵」**里可视化编辑皮肤、气泡、动作、工具绑定，存了就热更新。
+
+> 仓库里的 `assets/placeholder` 是脚本画的占位立绘（够跑通整套流程）。
+> `assets/placeholder/nienie/` 那份第三方角色素材没入库——请自备素材，别把别人的作品打包进公开仓库。
+
 ## 🔧 二次开发：新增一个工具
 
 1. 新建类实现 `ITool`（`Core/Tools/` 下）：
@@ -185,3 +220,5 @@ WebSocket 已连接 ✓
 - **频繁掉线 = 风控前兆**，停用半天再试，别硬刚。
 - **命令/工具自主性**：shell 沙箱是"防呆不防黑"级别，别让陌生人使唤静静跑命令。
 - 数据库单文件在 `bin\Debug\net10.0\data\bot.db`，备份直接拷走。
+- **面板令牌**：`Admin.Token` 在仓库里是占位值 `change-me`，部署后请改成自己的；留空 = 本机不校验（不建议）。
+- **别把凭据提交上去**：`OwnerId` / `ApiKey` / `Admin.Token` 填完自己的就行，别往仓库里推。

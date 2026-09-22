@@ -394,6 +394,36 @@ public sealed class OneBotClient
         }
     }
 
+    /// <summary>
+    /// 获取某群成员名单，**把群名片与 QQ 昵称分开返回**：(QQ, 群名片, QQ昵称)。
+    /// 与 <see cref="GetGroupMemberListAsync"/> 的区别：那个把两者合并成一个显示名，
+    /// 这个分开给——群里一般用群名片称呼人，查"谁被这么叫"时需要能对上名片，
+    /// 同时 QQ 昵称可能完全不同（同一人在不同群名片也不同），两者不能混。
+    /// </summary>
+    public async Task<List<(long Qq, string Card, string Nick)>> GetGroupMemberProfilesAsync(long groupId, CancellationToken ct = default)
+    {
+        try
+        {
+            var body = new JsonObject { ["group_id"] = groupId };
+            var node = await PostForDataAsync("get_group_member_list", body, ct);
+            var arr = node?["data"] as JsonArray;
+            if (arr is null) return [];
+            var list = new List<(long, string, string)>();
+            foreach (var m in arr.OfType<JsonObject>())
+            {
+                var qq = m["user_id"]?.GetValue<long>() ?? 0;
+                if (qq <= 0) continue;
+                list.Add((qq, m["card"]?.GetValue<string>() ?? "", m["nickname"]?.GetValue<string>() ?? ""));
+            }
+            return list;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "获取群成员名单失败（group={Gid}）", groupId);
+            return [];
+        }
+    }
+
     /// <summary>获取某群最近 count 条消息（get_group_msg_history，NapCat 支持；返回旧→新）</summary>
     public async Task<List<JsonObject>> GetGroupMessagesAsync(long groupId, int count, CancellationToken ct = default)
     {

@@ -1,0 +1,9 @@
+# 统一行尾：文本走自动，bat 一律 CRLF（cmd 才稳）
+* text=auto
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.sh  text eol=lf
+*.cs  text=auto
+*.md  text=auto
+*.json text=auto

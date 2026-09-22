@@ -441,7 +441,7 @@ public sealed class DrawCommand : IBotCommand
         await _gen.SendTextAsync(new ToolContext(msg), $"好的～正在用你给的提示词画「{BuiltinCommands.Truncate(prompt, 20)}」…", ct);
 
         // 2. 直接生图并发送（跳过扩写）
-        var (ok, message) = await _gen.GenerateAndSendAsync(prompt, new ToolContext(msg), ct);
+        var (ok, message, _) = await _gen.GenerateAndSendAsync(prompt, new ToolContext(msg), ct);
         if (ok)
         {
             // 图片已发送，返回空字符串 → CommandRouter 不再重复回复

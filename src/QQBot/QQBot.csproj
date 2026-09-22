@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -15,7 +15,6 @@
 
   <ItemGroup>
     <Content Include="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
-    <Content Include="ComfyUI/Workflows/**" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="wwwroot/**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

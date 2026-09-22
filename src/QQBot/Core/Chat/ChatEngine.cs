@@ -92,6 +92,9 @@ public sealed class ChatEngine
         };
 
         var json = MergeExtra(JsonSerializer.Serialize(body, JsonOptions), ResolveExtraBody(extraBody));
+        // Files API 保底：本次请求是否带着 file 块（带着才需要回退逻辑）
+        var hasFileBlocks = messages.Any(m => m.FileIds is { Count: > 0 });
+        var fileFallbackUsed = false;
         for (int attempt = 0; attempt <= _llm.MaxRetries; attempt++)
         {
             if (attempt > 0)
@@ -132,6 +135,17 @@ public sealed class ChatEngine
                 }
 
                 var code = (int)resp.StatusCode;
+                // 【保底】带 Files API file 块的请求被服务端拒（模型不认 file 块 / file_id 失效 / 文件服务 5xx）：
+                // 把图片换成 base64 直接嵌进消息重新发一次。消息里一直留着 ImageDataUrls 就是为这一刻——
+                // 不用重新下载、不用重跑上传，用户那边完全无感。
+                if (!fileFallbackUsed && hasFileBlocks && SwitchToInlineImages(body.Messages.ToList()))
+                {
+                    fileFallbackUsed = true;
+                    json = MergeExtra(JsonSerializer.Serialize(body, JsonOptions), ResolveExtraBody(extraBody));
+                    _logger.LogWarning("Files API 图片块被拒（{Code} {Reason}），回退为 base64 内嵌图片后重试：{Body}",
+                        code, resp.ReasonPhrase, bodyText[..Math.Min(bodyText.Length, 200)]);
+                    continue;
+                }
                 if (code is 429 or >= 500)
                 {
                     _logger.LogWarning("LLM 返回 {Code}，{A}/{Max} 次重试", code, attempt, _llm.MaxRetries);
@@ -180,6 +194,8 @@ public sealed class ChatEngine
             Stream = false
         };
         var json = MergeExtra(JsonSerializer.Serialize(request, JsonOptions), ResolveExtraBody(extraBody));
+        var hasFileBlocks = messages.Any(m => m.FileIds is { Count: > 0 });
+        var fileFallbackUsed = false;
 
         for (int attempt = 0; attempt <= _llm.MaxRetries; attempt++)
         {
@@ -215,8 +231,17 @@ public sealed class ChatEngine
                     return new ChatResult(msg.Content, msg.ReasoningContent);
                 }
 
-                // 是否值得重试：429 限流 / 5xx 服务端错误 可重试；4xx 参数类不重试
                 var code = (int)resp.StatusCode;
+                // 【保底】同 CompleteWithToolsAsync：file 块被拒就换 base64 内嵌再来一次
+                if (!fileFallbackUsed && hasFileBlocks && SwitchToInlineImages(request.Messages.ToList()))
+                {
+                    fileFallbackUsed = true;
+                    json = MergeExtra(JsonSerializer.Serialize(request, JsonOptions), ResolveExtraBody(extraBody));
+                    _logger.LogWarning("Files API 图片块被拒（{Code} {Reason}），回退为 base64 内嵌图片后重试",
+                        code, resp.ReasonPhrase);
+                    continue;
+                }
+                // 是否值得重试：429 限流 / 5xx 服务端错误 可重试；4xx 参数类不重试
                 if (code is 429 or >= 500)
                 {
                     _logger.LogWarning("LLM 返回 {Code}，{A}/{Max} 次重试", code, attempt, _llm.MaxRetries);
@@ -284,6 +309,26 @@ public sealed class ChatEngine
         {
             return requestJson;
         }
+    }
+
+    /// <summary>
+    /// Files API 保底：把消息里的图片从"file 块"切成"base64 内嵌"（置 ForceInlineImages）。
+    /// 只切同时带 ImageDataUrls 的消息——没有 base64 备份的切了会把图弄丢。
+    /// 返回是否真的切过（没切就不用重试了）。
+    /// </summary>
+    private static bool SwitchToInlineImages(IReadOnlyList<ChatMessage> messages)
+    {
+        var changed = false;
+        foreach (var m in messages)
+        {
+            if (m.ForceInlineImages) continue;
+            if (m.FileIds is { Count: > 0 } && m.ImageDataUrls is { Count: > 0 })
+            {
+                m.ForceInlineImages = true;
+                changed = true;
+            }
+        }
+        return changed;
     }
 
     /// <summary>格式化 JSON 便于阅读（中文不转义）；非法 JSON 原样返回</summary>

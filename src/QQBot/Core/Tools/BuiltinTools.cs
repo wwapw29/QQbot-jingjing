@@ -16,23 +16,62 @@ public static class BuiltinTools
                                                GenerateImageTool generateImage,
                                                ShellOptions shellOptions,
                                                ILogger<ShellTool> shellLogger,
-                                               int maxContextMessages)
+                                               int maxContextMessages,
+                                               QQBot.Core.Vision.VisionService vision,
+                                               QQBot.Core.Options.ToolsOptions toolsOptions,
+                                               ILogger<ScreenCaptureTool> screenLogger)
     {
         var tools = new List<ITool>
         {
             new GetTimeTool(),
+            new ReadyToReplyTool(),   // 烧token模式专用（OwnerOnly）：只在收集阶段出现，正式回复阶段会被移除
             new RememberTool(memory),
             new SearchMemoryTool(db),
+            new UpdateMemoryTool(db),   // 整理记忆：修正已有记忆的内容/重要度（OwnerOnly，不能删除）
             new GetChatHistoryTool(db, client, maxContextMessages),
+            new GetGroupMembersTool(client),   // 群成员名录（群名片/昵称/QQ）——查"群里某人是哪个"用
             new SendTextTool(client),
             new GetFriendListTool(client),
             new SendPrivateMessageTool(client),
             new BrowseWebTool(),
+            new ReadFileTool(shellOptions),
+            new ScreenCaptureTool(vision, toolsOptions, screenLogger),   // 仅主人可用（OwnerOnly）
             generateImage
         };
         if (shellOptions.Enabled) tools.Add(new ShellTool(shellOptions, shellLogger));
         return tools;
     }
+}
+
+/// <summary>
+/// ready_to_reply —— 烧token模式专用：声明"信息收集完毕，可以正式回复了"。
+/// ⚠️ 她平时（普通聊天、自主活动）**没有**这个工具：只在烧token模式的收集阶段出现，
+/// 进入正式回复阶段会被从工具清单里移除；且 OwnerOnly=true，客人清单里永远不出现。
+/// 程序靠"是否调用了它"来划分收集阶段与正文输出——这是唯一的收敛信号。
+/// </summary>
+public sealed class ReadyToReplyTool : ITool
+{
+    public string Name => "ready_to_reply";
+
+    public string Description =>
+        "声明你的信息收集已经完成、可以开始正式回复了。当且仅当你确认手上的信息足够回复对方时调用它。" +
+        "调用之后，你的**下一次输出**才会被当作正式回复发给对方；在此之前你说的任何话对方都看不到，" +
+        "只是你的内部记录，所以不必在这里写正式回复内容。如果信息还不够，请继续调用其它工具去查，不要过早调用本工具。" +
+        "⚠️ 想结束收集、想发言，都只能用本工具——收集阶段调用 send_text / send_private_message 会被拦截、内容当场丢弃，" +
+        "所以不要用它们来\"回复\"或表达\"我说完了\"。";
+
+    public JsonObject ParametersSchema => new()
+    {
+        ["type"] = "object",
+        ["properties"] = new JsonObject(),
+        ["additionalProperties"] = false
+    };
+
+    // 仅主人可用：客人不该看见这个工具（他们也不会进入烧token模式）
+    public bool OwnerOnly => true;
+
+    public Task<string> ExecuteAsync(string argsJson, ToolContext ctx, CancellationToken ct)
+        => Task.FromResult("已收到：信息收集阶段结束，可以开始正式回复了。请在接下来的一条消息里给出正式回复。");
 }
 
 /// <summary>get_time —— 获取当前时间</summary>
@@ -58,7 +97,7 @@ public sealed class RememberTool : ITool
     public RememberTool(MemoryService memory) => _memory = memory;
 
     public string Name => "remember";
-    public string Description => "将用户明确要求记住的信息写入长期记忆。当用户明确要求你记住某事（说“记住…”“记下来”“记一下…”“帮我记住…”等）时，必须立即调用本工具写入记忆，并在最终回复中明确告知“记住了”；日常聊天中的普通信息不需要主动记录（有后台自动总结），更不要为了表态而调用本工具。";
+    public string Description => "将用户明确要求记住的信息写入长期记忆。当用户明确要求你记住某事（说“记住…”“记下来”“记一下…”“帮我记住…”等）时，必须立即调用本工具写入记忆，并在最终回复中明确告知“记住了”；日常聊天中的普通信息不需要主动记录（有后台自动总结），更不要为了表态而调用本工具。写入前先判断归属（见 global 参数）：公开事实记通用，私人内容记私密。";
 
     public JsonObject ParametersSchema => new()
     {
@@ -66,7 +105,7 @@ public sealed class RememberTool : ITool
         ["properties"] = new JsonObject
         {
             ["content"] = new JsonObject { ["type"] = "string", ["description"] = "要记住的记忆内容" },
-            ["global"] = new JsonObject { ["type"] = "boolean", ["description"] = "是否记成通用记忆（默认 false=只对该用户/该群有效；仅当是静静自己的行为规则或适用于所有人的常识时才传 true，用户个人或某个群里的事绝不传 true）" }
+            ["global"] = new JsonObject { ["type"] = "boolean", ["description"] = "记成通用还是私密（默认 false）。判断标准只有一个——**这条当着别人、或在别的群里被说出来，会不会不合适？** 不会 → true（通用）：静静自己的设定、对方的身份/称呼/账号、群里对某人的固定叫法（如「29老师」指主人）这类公开事实，别人问起时你也该答得上；会 → false（私密）：个人偏好、习惯、亲密话题、情绪细节、只在某个人或某个群内发生的事。拿不准时选 false。" }
         },
         ["required"] = new JsonArray("content"),
         ["additionalProperties"] = false
@@ -96,16 +135,21 @@ public sealed class SearchMemoryTool : ITool
     public SearchMemoryTool(Database db) => _db = db;
 
     public string Name => "search_memory";
-    public string Description => "检索与该用户相关的长期记忆（偏好、事件、承诺等）。当需要回想之前聊过的事、用户问“你还记得…”时自主调用直接检索，无需询问用户。";
+    public string Description =>
+        "查询 / 盘点你的长期记忆。两种用法：" +
+        "① 想回忆「记过什么关于某人、某事」→ 传关键词检索；" +
+        "② 想盘点「我到底记住了什么、有没有记漏 / 记错 / 过时的」→ query 留空，" +
+        "会列出你当前范围内的记忆清单（带编号 #id、重要度、分类）以及记忆总条数。" +
+        "拿到 #id 后可以用 update_memory 修正；发现该记而没记的，用 remember 补上。";
 
     public JsonObject ParametersSchema => new()
     {
         ["type"] = "object",
         ["properties"] = new JsonObject
         {
-            ["query"] = new JsonObject { ["type"] = "string", ["description"] = "检索关键词/话题" }
+            ["query"] = new JsonObject { ["type"] = "string", ["description"] = "检索关键词/话题；留空 = 盘点模式（列出你范围内的记忆清单）" },
+            ["limit"] = new JsonObject { ["type"] = "integer", ["description"] = "最多返回几条（默认 12；盘点时可给 30~50，上限 100）" }
         },
-        ["required"] = new JsonArray("query"),
         ["additionalProperties"] = false
     };
 
@@ -113,15 +157,167 @@ public sealed class SearchMemoryTool : ITool
     {
         var args = JsonNode.Parse(argsJson) as JsonObject;
         var query = args?["query"]?.GetValue<string>() ?? "";
+        var limit = Math.Clamp(args?["limit"]?.GetValue<int>() ?? 12, 1, 100);
+        var inventory = string.IsNullOrWhiteSpace(query) || query.Trim() == "*";
 
-        long? qqId = ctx.Message.IsPrivate ? ctx.Message.UserId : null;
-        var all = _db.LoadMemories(qqId, 20, includeGlobal: true);
-        var hits = all
-            .Where(m => string.IsNullOrEmpty(query) || m.Content.Contains(query, StringComparison.OrdinalIgnoreCase))
-            .Take(10)
+        // ⚠️ 群聊也必须带说话人 QQ：记忆粒度是「群 + 用户」，写入（RememberTool）与自动注入
+        // （MemoryService.BuildMemoryInjection → GetContextMemories）都一直这么传；
+        // 这里若在群聊时置空，会导致 user 记忆在群里**全部查不到**
+        // （实测：群里只看到 11 条 = global 9 + 群层面 2，私聊 30 条）。
+        long? qqId = ctx.Message.UserId;
+        long? gid = ctx.Message.IsPrivate ? null : ctx.Message.GroupId;
+        var (items, total) = _db.SearchScopedMemories(qqId, gid, inventory ? null : query, limit);
+
+        if (items.Count == 0)
+        {
+            return Task.FromResult(inventory
+                ? "你在这个范围内的记忆库是空的——什么都还没记住。"
+                : $"没有找到与「{query}」相关的记忆（你范围内的记忆共 {total} 条）。");
+        }
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine(inventory
+            ? $"你范围内的记忆共 {total} 条，以下是重要度最高的 {items.Count} 条（#id 可用 update_memory 修正）："
+            : $"与「{query}」相关的记忆 {items.Count} 条（你范围内的记忆共 {total} 条）：");
+        foreach (var m in items)
+            sb.AppendLine($"#{m.Id} ★{m.Importance} [{(string.IsNullOrWhiteSpace(m.Category) ? m.Scope : m.Category)}] {m.Content}");
+        return Task.FromResult(sb.ToString().TrimEnd());
+    }
+}
+
+/// <summary>
+/// update_memory —— 修正一条**已有**记忆的内容 / 重要度（"整理记忆"用）。
+/// 烧token模式的收尾自评轮靠它把"发现记错了 / 记漏了关键点 / 重要度标歪了"落地。
+/// ⚠️ 只允许改她自己范围内的记忆（通用 / 该用户 / 该群），且**不提供删除**——
+/// 删除不可逆，留给主人的 ! 命令。OwnerOnly=true。
+/// </summary>
+public sealed class UpdateMemoryTool : ITool
+{
+    private readonly Database _db;
+    public UpdateMemoryTool(Database db) => _db = db;
+
+    public string Name => "update_memory";
+
+    public string Description =>
+        "修正一条已有记忆的内容或重要度（用于整理记忆：发现记错了、记漏了关键点、重要度标错了时）。" +
+        "先用 search_memory 盘点拿到记忆编号 #id，再调用本工具。它不能新增（用 remember）、也不能删除。" +
+        "只有在确实发现记忆有误 / 缺失 / 过时时才调用，不要为了显得认真而修改。";
+
+    public JsonObject ParametersSchema => new()
+    {
+        ["type"] = "object",
+        ["properties"] = new JsonObject
+        {
+            ["memory_id"] = new JsonObject { ["type"] = "integer", ["description"] = "要修正的记忆编号（search_memory 返回的 #id）" },
+            ["content"] = new JsonObject { ["type"] = "string", ["description"] = "修正后的完整内容（不改就留空）" },
+            ["importance"] = new JsonObject { ["type"] = "integer", ["description"] = "修正后的重要度 1~5（不改就留空）" }
+        },
+        ["required"] = new JsonArray("memory_id"),
+        ["additionalProperties"] = false
+    };
+
+    public bool OwnerOnly => true;
+
+    public Task<string> ExecuteAsync(string argsJson, ToolContext ctx, CancellationToken ct)
+    {
+        var args = JsonNode.Parse(argsJson) as JsonObject;
+        var id = args?["memory_id"]?.GetValue<long>() ?? 0;
+        if (id <= 0) return Task.FromResult("需要给出 memory_id（先用 search_memory 拿到 #编号）。");
+
+        var rec = _db.GetMemoryById(id);
+        if (rec is null) return Task.FromResult($"没有找到编号 #{id} 的记忆。");
+
+        // 范围校验：与检索范围一致（通用 / 该用户 / 该群里归属该用户的），防止改到别人或别的群的记忆
+        long? qq = ctx.Message.UserId;
+        long? gid = ctx.Message.IsPrivate ? null : ctx.Message.GroupId;
+        var inScope = rec.Scope == "global"
+                      || (rec.Scope == "user" && rec.QqId == qq)
+                      || (rec.Scope == "group" && rec.GroupId == gid && (!rec.QqId.HasValue || rec.QqId == qq));
+        if (!inScope) return Task.FromResult($"编号 #{id} 的记忆不在你当前的记忆范围内，不能修改。");
+
+        var newContent = args?["content"]?.GetValue<string>();
+        int? newImp = args?["importance"]?.GetValue<int>();
+        if (string.IsNullOrWhiteSpace(newContent) && newImp is null)
+            return Task.FromResult("没给出要改的字段（content / importance 至少给一个）。");
+
+        var content = string.IsNullOrWhiteSpace(newContent) ? rec.Content : newContent.Trim();
+        var imp = Math.Clamp(newImp ?? rec.Importance, 1, 5);
+        var ok = _db.UpdateMemoryFull(id, content, rec.Trigger, imp, rec.Scope, rec.QqId, rec.GroupId);
+        return Task.FromResult(ok
+            ? $"已更新 #{id}：★{rec.Importance} → ★{imp}｜{content}"
+            : $"更新 #{id} 失败（记忆可能已不存在）。");
+    }
+}
+
+/// <summary>
+/// get_group_members —— 群成员名录（群名片 + QQ 昵称 + QQ 号）。
+/// 补的是这个缺口：她的历史/记忆都是**文字**，遇到"群里某人是哪个"——
+/// 尤其主人直接报出一个群名片的名字时——她没有别的地方可查，只能靠聊天记录猜（实测因此认错过人）。
+/// 注意：群成员的**私称/外号**（如「29老师」）不在名录里，那种只能靠聊天记录或记忆。
+/// </summary>
+public sealed class GetGroupMembersTool : ITool
+{
+    private readonly OneBotClient _client;
+    public GetGroupMembersTool(OneBotClient client) => _client = client;
+
+    public string Name => "get_group_members";
+
+    public string Description =>
+        "查询当前群的成员名录：每个人的 **群名片**、**QQ 昵称**和 **QQ 号**都在这里（群里一般用群名片称呼人）。" +
+        "当群里出现你不认识的人名、或者要确认「某个名字对应哪个 QQ、这个人在不在群里」时，**用它核对，不要靠聊天记录猜**。" +
+        "可以按关键词筛选（如只查名字里带「狐」的）。" +
+        "注意：私下的外号/绰号（如「29老师」）通常不在名录里——那属于群里约定俗成的叫法，只能靠聊天记录或记忆；" +
+        "但「这个群里都有谁、谁叫什么、群名片是什么」只有名录能答。";
+
+    public JsonObject ParametersSchema => new()
+    {
+        ["type"] = "object",
+        ["properties"] = new JsonObject
+        {
+            ["query"] = new JsonObject { ["type"] = "string", ["description"] = "按关键词筛选：群名片 / QQ 昵称 / QQ 号 里包含它就算命中；留空 = 全部成员" },
+            ["limit"] = new JsonObject { ["type"] = "integer", ["description"] = "最多返回几个（默认 50，上限 200）" }
+        },
+        ["additionalProperties"] = false
+    };
+
+    public async Task<string> ExecuteAsync(string argsJson, ToolContext ctx, CancellationToken ct)
+    {
+        JsonObject? args = null;
+        try { args = JsonNode.Parse(argsJson) as JsonObject; } catch { /* 参数坏了就当空 */ }
+        var query = (args?["query"]?.GetValue<string>() ?? "").Trim();
+        var limit = Math.Clamp(args?["limit"]?.GetValue<int>() ?? 50, 1, 200);
+
+        if (ctx.Message.IsPrivate)
+            return "当前是私聊、没有群上下文 —— 本工具在这里用不了，**不要再调用它**。" +
+                   "要查某个群的名录，请在群里问我；或者先用 get_chat_history 看群里的聊天记录。";
+
+        var members = await _client.GetGroupMemberProfilesAsync(ctx.Message.GroupId, ct);
+        if (members.Count == 0) return "没能取到这个群的成员名录（接口失败或机器人权限不足）。";
+
+        var hit = members
+            .Where(m => query.Length == 0
+                        || m.Card.Contains(query, StringComparison.OrdinalIgnoreCase)
+                        || m.Nick.Contains(query, StringComparison.OrdinalIgnoreCase)
+                        || m.Qq.ToString().Contains(query, StringComparison.Ordinal))
+            .Take(limit)
             .ToList();
-        if (hits.Count == 0) return Task.FromResult("没有找到相关记忆");
-        return Task.FromResult(string.Join("\n", hits.Select(m => $"- {m.Content}(★{m.Importance})")));
+
+        if (hit.Count == 0)
+            return $"这个群共 {members.Count} 人，但没有任何人的群名片 / QQ 昵称 / QQ 号包含「{query}」。" +
+                   "（如果你找的是外号、绰号，名录里查不到，得靠聊天记录或记忆。）";
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine(query.Length == 0
+            ? $"群 {ctx.Message.GroupId} 共 {members.Count} 人（格式：群名片 ｜ QQ昵称 ｜ QQ号）："
+            : $"匹配「{query}」的成员 {hit.Count} 人（格式：群名片 ｜ QQ昵称 ｜ QQ号）：");
+        foreach (var m in hit)
+        {
+            var card = string.IsNullOrWhiteSpace(m.Card) ? "（未设群名片）" : m.Card;
+            var nick = string.IsNullOrWhiteSpace(m.Nick) ? "（无昵称）" : m.Nick;
+            sb.AppendLine($"· {card} ｜ {nick} ｜ {m.Qq}");
+        }
+        sb.Append("（群名片是群里称呼用的名字；同一人的 QQ 昵称常常完全不同，别把两者当成两个人。）");
+        return sb.ToString();
     }
 }
 
