@@ -58,6 +58,7 @@ NapCat（独立进程，OneBot 11 协议）
 
 ```
 QQBot-share/
+├── docs/                       📚 文档：使用手册 / NapCat 教程 / 设计方案…
 ├── scripts/
 │   ├── start.bat               启动（同步配置 + 运行）
 │   ├── stop.bat                停止
@@ -211,6 +212,25 @@ WebSocket 已连接 ✓
    }
    ```
 2. 在 `BuiltinTools.CreateAll()` 注册一行即可——LLM 就会自动学会使用它。
+
+---
+
+## 📚 文档
+
+**想用她，先看 [`docs/使用手册.md`](docs/使用手册.md)** —— 三个入口怎么用、她怎么工作、面板每一页干什么、出问题看哪儿。
+
+| 文档 | 讲什么 |
+|---|---|
+| **[`docs/使用手册.md`](docs/使用手册.md)** | ⭐ **使用手册**：从装好到用顺、机制详解、排查 |
+| [`docs/NapCat安装教程.md`](docs/NapCat安装教程.md) | 协议端从零装好（含无头模式扫码、端口自检） |
+| [`docs/QQ机器人设计方案.md`](docs/QQ机器人设计方案.md) | 整体架构与设计取舍 |
+| [`docs/烧token模式.md`](docs/烧token模式.md) | "静默准备"模式：她先自己查清楚再回答 |
+| [`docs/记忆系统改进方案.md`](docs/记忆系统改进方案.md) | 记忆归属 / 关联 / 衰减的设计 |
+| [`docs/提示词管理重构方案.md`](docs/提示词管理重构方案.md) · [`提示词整理方案.md`](docs/提示词整理方案.md) | 提示词分层与场景 Profile |
+| [`docs/上下文瘦身方案.md`](docs/上下文瘦身方案.md) | 上下文怎么省（她的档案越写越长之后） |
+| [`docs/单元测试方案.md`](docs/单元测试方案.md) | 纯逻辑函数的断言保护 |
+| [`src/DesktopPet/README.md`](src/DesktopPet/README.md) | 桌面宠物操作手册（换素材 / 动作 / 吸附 / 日志） |
+| [`src/DesktopPet/docs/桌面宠物方案.md`](src/DesktopPet/docs/桌面宠物方案.md) | 桌宠架构与分期设计 |
 
 ---
 
